@@ -10,7 +10,7 @@ if hasattr(gym, "register_envs"):
 N_AGENTS = 3
  
  
-def make_env(n_agents: int = N_AGENTS, render_mode="rgb_array") -> gym.Env:
+def make_env(n_agents: int = N_AGENTS, render_mode=None) -> gym.Env:
     config = {
         # --- multi-agent core -------------------------------------------
         "controlled_vehicles": n_agents,
