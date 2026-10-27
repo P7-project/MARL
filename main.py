@@ -1,21 +1,3 @@
-"""
-MAPPO (Multi-Agent PPO) for multi-agent highway-env.
-
-Design:
-  * Parameter-shared actor: one policy network used by all agents. A one-hot
-    agent id is appended to each agent's observation so they can specialise.
-  * Centralised critic: V(s) takes the concatenation of ALL agents' observations.
-  * Team reward: highway-env returns one shared scalar reward, so GAE is computed
-    at team level and the same advantage is used for every agent's policy loss.
-
-Install:
-    pip install highway-env gymnasium torch numpy
-
-Train:
-    python mappo_highway.py --total-steps 200000 --save mappo.pt
-Evaluate:
-    python mappo_highway.py --eval mappo.pt --render
-"""
 import argparse
 
 import gymnasium as gym
