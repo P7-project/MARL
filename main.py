@@ -6,6 +6,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.distributions import Categorical
+from rich.console import Console
+from rich.live import Live
+
+console = Console()
 
 if hasattr(gym, "register_envs"):
     gym.register_envs(highway_env)
@@ -15,29 +19,30 @@ if hasattr(gym, "register_envs"):
 # Environment
 # --------------------------------------------------------------------------- #
 def make_env(n_agents: int = 3, render_mode=None) -> gym.Env:
-    config = {
-        "controlled_vehicles": n_agents,
-        "observation": {
-            "type": "MultiAgentObservation",
-            "observation_config": {
-                "type": "Kinematics",
-                "vehicles_count": 5,
-                "features": ["presence", "x", "y", "vx", "vy"],
-                "absolute": False,
+    with console.status(f"Creating highway-v0 env with {n_agents} agents..."):
+        config = {
+            "controlled_vehicles": n_agents,
+            "observation": {
+                "type": "MultiAgentObservation",
+                "observation_config": {
+                    "type": "Kinematics",
+                    "vehicles_count": 5,
+                    "features": ["presence", "x", "y", "vx", "vy"],
+                    "absolute": False,
+                },
             },
-        },
-        "action": {
-            "type": "MultiAgentAction",
-            "action_config": {"type": "DiscreteMetaAction"},
-        },
-        "lanes_count": 4,
-        "vehicles_count": 30,
-        "duration": 40,
-        "initial_lane_id": None,
-        "policy_frequency": 1,
-        "simulation_frequency": 15,
-    }
-    return gym.make("highway-v0", config=config, render_mode=render_mode)
+            "action": {
+                "type": "MultiAgentAction",
+                "action_config": {"type": "DiscreteMetaAction"},
+            },
+            "lanes_count": 4,
+            "vehicles_count": 30,
+            "duration": 40,
+            "initial_lane_id": None,
+            "policy_frequency": 1,
+            "simulation_frequency": 15,
+        }
+        return gym.make("highway-v0", config=config, render_mode=render_mode)
 
 
 def flatten_obs(obs) -> np.ndarray:
@@ -167,88 +172,95 @@ def ppo_update(actor, critic, opt_actor, opt_critic, buf, last_value, args, devi
 # Training
 # --------------------------------------------------------------------------- #
 def train(args):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+    with console.status(f"Setting up training with {args.agents} agents..."):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
 
-    n_agents = args.agents
-    env = make_env(n_agents)
-    obs_dim = int(np.prod(env.observation_space.spaces[0].shape))
-    n_actions = int(env.action_space.spaces[0].n)
+        n_agents = args.agents
+        env = make_env(n_agents)
+        obs_dim = int(np.prod(env.observation_space.spaces[0].shape))
+        n_actions = int(env.action_space.spaces[0].n)
 
-    actor = Actor(obs_dim + n_agents, n_actions).to(device)
-    critic = Critic(obs_dim * n_agents).to(device)
-    opt_actor = torch.optim.Adam(actor.parameters(), lr=args.lr_actor, eps=1e-5)
-    opt_critic = torch.optim.Adam(critic.parameters(), lr=args.lr_critic, eps=1e-5)
+        actor = Actor(obs_dim + n_agents, n_actions).to(device)
+        critic = Critic(obs_dim * n_agents).to(device)
+        opt_actor = torch.optim.Adam(actor.parameters(), lr=args.lr_actor, eps=1e-5)
+        opt_critic = torch.optim.Adam(critic.parameters(), lr=args.lr_critic, eps=1e-5)
 
-    obs, _ = env.reset(seed=args.seed)
-    obs = flatten_obs(obs)
-    ep_ret, finished = 0.0, []
-    steps_done, iteration = 0, 0
+        obs, _ = env.reset(seed=args.seed)
+        obs = flatten_obs(obs)
+        ep_ret, finished = 0.0, []
+        steps_done, iteration = 0, 0
 
+    
     while steps_done < args.total_steps:
-        buf = {k: [] for k in ("aobs", "state", "act", "logp", "rew", "done", "val")}
+        with console.status(f"Training ({steps_done}/{args.total_steps} steps, {len(finished)} episodes, {iteration} iterations)..."):
+            buf = {k: [] for k in ("aobs", "state", "act", "logp", "rew", "done", "val")}
 
-        for _ in range(args.rollout):
-            aobs = build_actor_obs(obs, n_agents)
-            state = obs.reshape(-1)
+            rollout = 0
+            #with console.status(f"Rollout ({rollout}/{args.rollout})..."):
+            with Live(console=console, refresh_per_second=0.1) as rollout_live:
+                for rollout in range(args.rollout):
+                    rollout_live.update(f"Rollout ({rollout}/{args.rollout})...")
+                    aobs = build_actor_obs(obs, n_agents)
+                    state = obs.reshape(-1)
+
+                    with torch.no_grad():
+                        dist = actor.dist(torch.as_tensor(aobs, device=device))
+                        a = dist.sample()
+                        logp = dist.log_prob(a)
+                        v = critic(torch.as_tensor(state, device=device)).item()
+
+                    actions = tuple(int(x) for x in a.cpu().numpy())
+                    next_obs, r, terminated, truncated, _ = env.step(actions)
+                    next_obs = flatten_obs(next_obs)
+                    r = float(r)
+                    done = terminated or truncated
+
+                    # Time-limit truncation is not a real terminal state: bootstrap from V(s').
+                    r_train = r
+                    if truncated and not terminated:
+                        with torch.no_grad():
+                            nv = critic(torch.as_tensor(next_obs.reshape(-1), device=device)).item()
+                        r_train += args.gamma * nv
+
+                    buf["aobs"].append(aobs)
+                    buf["state"].append(state)
+                    buf["act"].append(a.cpu().numpy())
+                    buf["logp"].append(logp.cpu().numpy())
+                    buf["rew"].append(r_train)
+                    buf["done"].append(float(done))
+                    buf["val"].append(v)
+
+                    ep_ret += r
+                    steps_done += 1
+
+                    if done:
+                        finished.append(ep_ret)
+                        ep_ret = 0.0
+                        next_obs, _ = env.reset()
+                        next_obs = flatten_obs(next_obs)
+                    obs = next_obs
 
             with torch.no_grad():
-                dist = actor.dist(torch.as_tensor(aobs, device=device))
-                a = dist.sample()
-                logp = dist.log_prob(a)
-                v = critic(torch.as_tensor(state, device=device)).item()
+                last_value = critic(torch.as_tensor(obs.reshape(-1), device=device)).item()
 
-            actions = tuple(int(x) for x in a.cpu().numpy())
-            next_obs, r, terminated, truncated, _ = env.step(actions)
-            next_obs = flatten_obs(next_obs)
-            r = float(r)
-            done = terminated or truncated
+            stats = ppo_update(actor, critic, opt_actor, opt_critic,
+                            buf, last_value, args, device)
 
-            # Time-limit truncation is not a real terminal state: bootstrap from V(s').
-            r_train = r
-            if truncated and not terminated:
-                with torch.no_grad():
-                    nv = critic(torch.as_tensor(next_obs.reshape(-1), device=device)).item()
-                r_train += args.gamma * nv
-
-            buf["aobs"].append(aobs)
-            buf["state"].append(state)
-            buf["act"].append(a.cpu().numpy())
-            buf["logp"].append(logp.cpu().numpy())
-            buf["rew"].append(r_train)
-            buf["done"].append(float(done))
-            buf["val"].append(v)
-
-            ep_ret += r
-            steps_done += 1
-
-            if done:
-                finished.append(ep_ret)
-                ep_ret = 0.0
-                next_obs, _ = env.reset()
-                next_obs = flatten_obs(next_obs)
-            obs = next_obs
-
-        with torch.no_grad():
-            last_value = critic(torch.as_tensor(obs.reshape(-1), device=device)).item()
-
-        stats = ppo_update(actor, critic, opt_actor, opt_critic,
-                           buf, last_value, args, device)
-
-        iteration += 1
-        recent = finished[-10:]
-        mean_ret = float(np.mean(recent)) if recent else float("nan")
-        print(f"iter {iteration:4d} | steps {steps_done:7d} | "
-              f"mean ep return (last {len(recent)}) {mean_ret:7.2f} | "
-              f"actor {stats['actor']:.3f} critic {stats['critic']:.3f} "
-              f"entropy {stats['entropy']:.3f}")
+            iteration += 1
+            recent = finished[-10:]
+            mean_ret = float(np.mean(recent)) if recent else float("nan")
+            console.print(f"iter {iteration:4d} | steps {steps_done:7d} | "
+                f"mean ep return (last {len(recent)}) {mean_ret:7.2f} | "
+                f"actor {stats['actor']:.3f} critic {stats['critic']:.3f} "
+                f"entropy {stats['entropy']:.3f}")
 
     if args.save:
         torch.save({"actor": actor.state_dict(), "critic": critic.state_dict(),
                     "n_agents": n_agents, "obs_dim": obs_dim,
                     "n_actions": n_actions}, args.save)
-        print(f"Saved checkpoint to {args.save}")
+        console.print(f"Saved checkpoint to {args.save}")
     env.close()
 
 
@@ -278,7 +290,7 @@ def evaluate(args):
             total += float(r)
             steps += 1
             done = terminated or truncated
-        print(f"Eval episode {ep + 1}: steps={steps}, return={total:.2f}, "
+        console.print(f"Eval episode {ep + 1}: steps={steps}, return={total:.2f}, "
               f"crashed={info.get('crashed')}")
     env.close()
 
