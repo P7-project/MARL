@@ -8,5 +8,6 @@ dependencies = [
     "gymnasium>=1.4.0",
     "highway-env>=1.12.1",
     "numpy>=2.4.6",
+    "rich>=15.0.0",
     "torch>=2.14.1",
 ]
