@@ -18,6 +18,20 @@ if hasattr(gym, "register_envs"):
 # --------------------------------------------------------------------------- #
 # Environment
 # --------------------------------------------------------------------------- #
+# Environment: highway-v0 is configured as a multi-agent task with n_agents
+# controlled cars among 30 background vehicles. Each agent observes a 5x5
+# Kinematics table (presence, x, y, vx, vy) with real-valued entries (presence
+# is binary). Each agent chooses from a finite set of discrete meta-actions via 
+# DiscreteMetaAction (lane left, idle, lane right,faster, slower).
+
+# flatten_obs: turns each agent's 5x5 table into a flat vector of 25 values,
+# giving an (N, 25) array.
+# 
+# build_actor_obs: appends a one-hot agent ID to each observation so that one
+# shared actor (parameter sharing) can behave differently for each agent.
+#
+# NOTE: mismatch with paper: the paper assumes a finite state space, the code
+# uses continuous observations (x, y, vx, vy are real-valued), the paper is to be fixed
 def make_env(n_agents: int = 3, render_mode=None) -> gym.Env:
     with console.status(f"Creating highway-v0 env with {n_agents} agents..."):
         config = {
@@ -58,6 +72,21 @@ def build_actor_obs(obs_flat: np.ndarray, n_agents: int) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 # Networks
 # --------------------------------------------------------------------------- #
+# Networks: two neural networks in an actor-critic setup (centralized training,
+# decentralized execution).
+# 
+# Actor (the "driver"): a shared policy pi_theta. It takes one agent's local
+# observation plus its one-hot ID and outputs a Categorical distribution over
+# the discrete actions. It is the only network needed at execution time.
+# 
+# Critic (the "coach"): a centralized value function V_phi. It takes the
+# concatenation of all agents' observations (the global state) and outputs one
+# scalar, the expected discounted return from that situation. It is only used
+# during training.
+# 
+# layer_init / mlp: helpers that build a small two-hidden-layer Tanh network
+# with orthogonal initialization. The actor's output layer uses a tiny gain
+# (0.01) so the initial policy is close to uniformly random.
 def layer_init(layer: nn.Linear, gain: float = np.sqrt(2)) -> nn.Linear:
     nn.init.orthogonal_(layer.weight, gain)
     nn.init.constant_(layer.bias, 0.0)
@@ -97,6 +126,19 @@ class Critic(nn.Module):
 # --------------------------------------------------------------------------- #
 # GAE
 # --------------------------------------------------------------------------- #
+# Generalized Advantage Estimation (GAE): GAE is a method for estimating the
+# advantage of an action. The advantage tells us whether an action was better
+# or worse than expected, and is defined as A(s, a) = Q(s, a) - V(s).
+# PPO has no Q network, so Q is approximated using only the critic's value
+# function V: Q(s, a) ~ r + gamma * V(s'). This gives the one-step advantage,
+# also called the TD error:
+#     delta_t = r_t + gamma * V(s_{t+1}) - V(s_t)
+# GAE then combines these one-step errors over future steps, weighted by lambda,
+# to balance bias (small lambda) against variance (large lambda):
+#     A_t = delta_t + (gamma*lambda) delta_{t+1} + (gamma*lambda)^2 delta_{t+2} + ...
+# The loop runs backwards because each step's advantage depends on the next
+# one, and `nonterminal` cuts the chain at episode ends. `returns` (adv + value)
+# is the target the critic is trained to predict.
 def compute_gae(rewards, values, dones, last_value, gamma, lam):
     T = len(rewards)
     adv = np.zeros(T, dtype=np.float32)
@@ -114,6 +156,18 @@ def compute_gae(rewards, values, dones, last_value, gamma, lam):
 # --------------------------------------------------------------------------- #
 # PPO update
 # --------------------------------------------------------------------------- #
+# PPO update: this is where learning happens, using one rollout of collected
+# data. Advantages come from GAE and are normalized (mean 0, std 1) for
+# stability. The same data is reused for several epochs of shuffled minibatches.
+# Actor loss (clipped surrogate objective): ratio = pi_new(a|o) / pi_old(a|o)
+# measures how much the policy has changed. The loss uses
+# min(ratio * A, clip(ratio, 1-eps, 1+eps) * A), so the policy gets no extra
+# reward for moving further than eps from the old policy. This keeps updates
+# small and stable. An entropy bonus (args.ent) encourages exploration. The
+# team advantage is broadcast to every agent.
+# Critic loss: mean squared error between V(s) and the returns.
+# Both networks use gradient clipping (max_grad_norm) before each optimizer
+# step. The function returns the average losses for logging.
 def ppo_update(actor, critic, opt_actor, opt_critic, buf, last_value, args, device):
     adv, ret = compute_gae(buf["rew"], buf["val"], buf["done"],
                            last_value, args.gamma, args.lam)
@@ -171,6 +225,19 @@ def ppo_update(actor, critic, opt_actor, opt_critic, buf, last_value, args, devi
 # --------------------------------------------------------------------------- #
 # Training
 # --------------------------------------------------------------------------- #
+# Training: the main on-policy loop. Each iteration has three stages:
+# 1. Rollout: for args.rollout steps, the actor samples an action for each
+#    agent (sampling, not argmax, so it explores), the critic estimates V(s),
+#    and the environment advances. Everything is stored in the buffer `buf`.
+#    The environment is reset when an episode ends (crash = terminated, time
+#    limit = truncated).
+# 2. Truncation handling: a time-limit ending is not a real terminal state, so
+#    the reward is augmented with gamma * V(s') (bootstrapping). A crash is a
+#    real terminal state and gets no bonus.
+# 3. Update: ppo_update trains the actor and critic on the buffer, which is
+#    then discarded (PPO is on-policy, so it needs fresh data every iteration).
+# Progress is printed per iteration (mean return of the last 10 episodes and
+# the average losses), and the networks are saved to args.save at the end.
 def train(args):
     with console.status(f"Setting up training with {args.agents} agents..."):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -267,6 +334,14 @@ def train(args):
 # --------------------------------------------------------------------------- #
 # Evaluation
 # --------------------------------------------------------------------------- #
+# Evaluation: loads a saved checkpoint (.pt file) and runs the trained policy.
+# The checkpoint stores the actor/critic weights plus n_agents, obs_dim and
+# n_actions, which are needed to rebuild networks of the same shape. Only the
+# actor is used (decentralized execution: each agent acts from its own local
+# observation and ID). Actions are chosen greedily with argmax instead of
+# sampling, so the policy always takes its highest-scoring action. For each
+# episode it prints the number of steps survived, the total return, and
+# whether a crash occurred. Use --render to watch the cars in a window.
 @torch.no_grad()
 def evaluate(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -296,6 +371,11 @@ def evaluate(args):
 
 
 # --------------------------------------------------------------------------- #
+# Command line
+# --------------------------------------------------------------------------- #
+# Command line: `python file.py` trains with the settings below, e.g.
+# `--agents 5 --total-steps 500000`. `python file.py --eval ABC.pt --render`
+# skips training and evaluates the saved checkpoint ABC.pt.
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--agents", type=int, default=3)
