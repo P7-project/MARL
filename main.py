@@ -2,12 +2,18 @@ import argparse
 
 import gymnasium as gym
 import highway_env  # noqa: F401  (registers the highway-* environments)
+
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.distributions import Categorical
+
 from rich.console import Console
 from rich.live import Live
+
+from datetime import datetime
+from torch.utils.tensorboard import SummaryWriter
+
 
 console = Console()
 
@@ -192,6 +198,11 @@ def train(args):
         ep_ret, finished = 0.0, []
         steps_done, iteration = 0, 0
 
+        # TensorBoard
+        run_name = args.run_name or datetime.now().strftime("%Y%m%d-%H%M%S")  
+        writer = SummaryWriter(f"{args.logdir}/{run_name}")  
+        writer.add_text("hparams", "\n".join(f"{k}: {v}" for k, v in vars(args).items()))  
+
     
     while steps_done < args.total_steps:
         with console.status(f"Training ({steps_done}/{args.total_steps} steps, {len(finished)} episodes, {iteration} iterations)..."):
@@ -212,7 +223,7 @@ def train(args):
                         v = critic(torch.as_tensor(state, device=device)).item()
 
                     actions = tuple(int(x) for x in a.cpu().numpy())
-                    next_obs, r, terminated, truncated, _ = env.step(actions)
+                    next_obs, r, terminated, truncated, info = env.step(actions)  
                     next_obs = flatten_obs(next_obs)
                     r = float(r)
                     done = terminated or truncated
@@ -237,6 +248,8 @@ def train(args):
 
                     if done:
                         finished.append(ep_ret)
+                        writer.add_scalar("episode/return", ep_ret, steps_done)  
+                        writer.add_scalar("episode/crashed", float(info.get("crashed", False)), steps_done)  
                         ep_ret = 0.0
                         next_obs, _ = env.reset()
                         next_obs = flatten_obs(next_obs)
@@ -256,13 +269,20 @@ def train(args):
                 f"actor {stats['actor']:.3f} critic {stats['critic']:.3f} "
                 f"entropy {stats['entropy']:.3f}")
 
+            # TensorBoard
+            writer.add_scalar("loss/actor", stats["actor"], steps_done)  
+            writer.add_scalar("loss/critic", stats["critic"], steps_done)  
+            writer.add_scalar("policy/entropy", stats["entropy"], steps_done)  
+            if recent:  
+                writer.add_scalar("episode/mean_return_last10", mean_ret, steps_done)  
+
     if args.save:
         torch.save({"actor": actor.state_dict(), "critic": critic.state_dict(),
                     "n_agents": n_agents, "obs_dim": obs_dim,
                     "n_actions": n_actions}, args.save)
         console.print(f"Saved checkpoint to {args.save}")
+    writer.close()  
     env.close()
-
 
 # --------------------------------------------------------------------------- #
 # Evaluation
@@ -315,6 +335,11 @@ if __name__ == "__main__":
     p.add_argument("--eval", type=str, default=None, help="path to checkpoint to evaluate")
     p.add_argument("--eval-episodes", type=int, default=5)
     p.add_argument("--render", action="store_true")
+
+    # TensorBoard
+    p.add_argument("--logdir", type=str, default="runs")
+    p.add_argument("--run-name", type=str, default=None, help="subfolder name in logdir (default: timestamp)")
+    
     args = p.parse_args()
 
     if args.eval:
