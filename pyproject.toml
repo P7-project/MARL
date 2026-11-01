@@ -12,3 +12,8 @@ dependencies = [
     "tensorboard>=2.21.0",
     "torch>=2.14.1",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
