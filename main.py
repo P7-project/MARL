@@ -249,7 +249,8 @@ def train(args):
                     if done:
                         finished.append(ep_ret)
                         writer.add_scalar("episode/return", ep_ret, steps_done)  
-                        writer.add_scalar("episode/crashed", float(info.get("crashed", False)), steps_done)  
+                        crashed = any(v.crashed for v in env.unwrapped.controlled_vehicles)
+                        writer.add_scalar("episode/crashed", float(crashed), steps_done)
                         ep_ret = 0.0
                         next_obs, _ = env.reset()
                         next_obs = flatten_obs(next_obs)
