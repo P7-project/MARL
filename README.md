@@ -15,19 +15,25 @@ uv sync
 ## Train
 
 ```bash
-uv run main.py --total-steps XXX --save ABC.pt
+uv run scripts/train.py --total-steps XXX --save ABC.pt
 ```
 
-Each iteration collects `--rollout` steps (default 512) before updating, so `--total-steps` should be much larger than the rollout. For a quick smoke test:
+Each iteration collects `--rollout` steps (default 512) before updating, so `--total-steps` should be much larger than the rollout. For a quick test:
 
 ```bash
-uv run main.py --total-steps 2000 --rollout 256 --save test.pt
+uv run scripts/train.py --total-steps 2000 --rollout 256 --save test.pt
 ```
 
 ## Evaluate
 
 ```bash
-uv run main.py --eval ABC.pt --render
+uv run scripts/evaluate.py --eval ABC.pt --render
+```
+
+## Tests
+
+```bash
+uv run pytest
 ```
 
 ## TensorBoard
