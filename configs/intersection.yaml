@@ -1,0 +1,26 @@
+
+gym_id: intersection-multi-agent-v2   
+observation:
+  type: Kinematics
+  vehicles_count: 15
+  features: [presence, x, y, vx, vy, cos_h, sin_h]
+  features_range:
+    x: [-100, 100]
+    y: [-100, 100]
+    vx: [-20, 20]
+    vy: [-20, 20]
+  absolute: true
+  flatten: false
+  observe_intentions: false
+action:
+  type: DiscreteMetaAction
+  longitudinal: true
+  lateral: false
+  target_speeds: [0, 4.5, 9]
+overrides: {}          
+perturbation:
+  features: [x, y, vx, vy]  
+  eps: 0.05                 
+train:
+  rollout: 256
+  total_steps: 200000

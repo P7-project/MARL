@@ -1,10 +1,4 @@
-# MAPPO (Multi-Agent PPO) for multi-agent highway-env
-
-## Design
-
-- **Parameter-shared actor:** one policy network used by all agents. A one-hot agent ID is appended to each agent's observation so they can specialise.
-- **Centralised critic:** V(s) takes the concatenation of all agents' observations.
-- **Team reward:** the code assumes highway-env returns one shared scalar reward, so GAE is computed at team level and the same advantage is used for every agent's policy loss.
+# MAPPO
 
 ## Install
 
@@ -15,35 +9,19 @@ uv sync
 ## Train
 
 ```bash
-uv run scripts/train.py --total-steps XXX --save ABC.pt
+uv run scripts/train.py --config configs/highway.yaml --save checkpoints/highway.pt
+uv run scripts/train.py --config configs/intersection.yaml --save checkpoints/intersection.pt
 ```
 
-Each iteration collects `--rollout` steps (default 512) before updating, so `--total-steps` should be much larger than the rollout. For a quick test:
-
-```bash
-uv run scripts/train.py --total-steps 2000 --rollout 256 --save test.pt
-```
+Add `--render` to show one live window of the shared training environment, with all controlled cars.
+Bare `--save` filenames are placed in `checkpoints/`; parent directories are created automatically.
 
 ## Evaluate
 
 ```bash
-uv run scripts/evaluate.py --eval ABC.pt --render
+uv run scripts/evaluate.py --eval checkpoints/highway.pt --render
+uv run scripts/evaluate.py --eval checkpoints/intersection.pt --config configs/intersection.yaml --render
 ```
 
-## Tests
-
-```bash
-uv run pytest
-```
-
-## TensorBoard
-
-To view training curves, run the following command in a separate terminal:
-
-```bash
-uv run tensorboard --logdir runs
-```
-
-TensorBoard is served at http://localhost:6006/.
-
-Logged metrics: episode return, crash rate, actor/critic loss, and policy entropy. Each training run is saved in its own subfolder of `runs/` (named by timestamp, or by `--run-name`), so runs can be compared side by side.
+Pass the training config when evaluating older checkpoints.
+With `--render`, evaluation opens up to 12 windows. Each shows a separate copy of the full multi-agent environment.

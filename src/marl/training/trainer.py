@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.live import Live
 from torch.utils.tensorboard import SummaryWriter
 
+from ..checkpoints import checkpoint_output_path
 from ..env import build_actor_obs, flatten_obs, make_env
 from ..mappo import ppo_update
 from ..models import Actor, Critic
@@ -24,7 +25,11 @@ def train(args):
         torch.manual_seed(args.seed)
 
         n_agents = args.agents
-        env = make_env(n_agents)
+        env = make_env(
+            n_agents,
+            render_mode="human" if getattr(args, "render", False) else None,
+            env_cfg=getattr(args, "env_cfg", None),
+        )
         obs_dim = int(np.prod(env.observation_space.spaces[0].shape))
         n_actions = int(env.action_space.spaces[0].n)
 
@@ -66,8 +71,10 @@ def train(args):
                     actions = tuple(int(item) for item in action.cpu().numpy())
                     next_obs, reward, terminated, truncated, _info = env.step(actions)
                     next_obs = flatten_obs(next_obs)
-                    reward = float(reward)
-                    done = terminated or truncated
+                    # MultiAgentWrapper returns one reward/termination flag per
+                    # agent. MAPPO here uses one team reward and one joint done.
+                    reward = float(np.asarray(reward, dtype=np.float32).mean())
+                    done = bool(np.any(terminated)) or bool(truncated)
 
                     # Time-limit truncation is not terminal, so include its bootstrap.
                     train_reward = reward
@@ -125,6 +132,7 @@ def train(args):
                 writer.add_scalar("episode/mean_return_last10", mean_return, steps_done)
 
     if args.save:
+        save_path = checkpoint_output_path(args.save)
         torch.save(
             {
                 "actor": actor.state_dict(),
@@ -132,10 +140,12 @@ def train(args):
                 "n_agents": n_agents,
                 "obs_dim": obs_dim,
                 "n_actions": n_actions,
+                "env_cfg": getattr(args, "env_cfg", None),
             },
-            args.save,
+            save_path,
         )
-        console.print(f"Saved checkpoint to {args.save}")
+        console.print(f"Saved checkpoint to {save_path}")
 
     writer.close()
+    env.close()
     env.close()
