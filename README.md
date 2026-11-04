@@ -8,9 +8,6 @@
 
 ## Install
 
-To install auto_LiRPA follow their own guide [here](https://github.com/Verified-Intelligence/auto_LiRPA#installation). You should install it at the project root.
-
-
 ```bash
 uv sync
 ```

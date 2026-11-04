@@ -28,8 +28,8 @@ from typing import NamedTuple
 import torch
 from torch import Tensor, nn
 
-from auto_LiRPA.auto_LiRPA import BoundedModule, BoundedTensor
-from auto_LiRPA.auto_LiRPA.perturbations import PerturbationLpNorm
+from auto_LiRPA import BoundedModule, BoundedTensor
+from auto_LiRPA.perturbations import PerturbationLpNorm
 
 
 class ActionBox(NamedTuple):

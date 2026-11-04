@@ -1,69 +1,226 @@
+"""
+    WocaR-DQN (Algorithm 2 of Liang et al., NeurIPS 2022) for discrete actions.
 
-    
+    Networks:
 
-from typing import Protocol
+    Q_v plus a target Q_v', trained as a vanilla DQN.
+    Q_r, the robust Q-network. It acts, and its bounds define A_adv_hat.
+    Q_phi, the worst-attack critic (outputs one value per action).
 
-from torch import Tensor, nn
+    Per update(batch, step):
+
+    + Update Q_v with the (double) DQN target, then soft-update Q_v'.
+    + Compute IBP output bounds of Q_r at s' with the current eps_t: Q_l(a), Q_u(a).
+    + A_adv_hat(s') = {a : Q_u(a) >= max_{a' != a} Q_l(a')}.
+    + a_hat = argmin_{a in A_adv_hat} Q_phi(s', a); y = r + gamma * Q_phi(s', a_hat).
+      Update phi with MSE.
+    + w(s) = normalized(max_a Q_v(s, a) - min_a Q_v(s, a)).
+    + Train Q_r on
+          y_r = r + gamma * max_a' [kappa_wst * Q_v'(s', a') + (1 - kappa_wst) * Q_phi(s', a')]
+          loss = (y_r - Q_r(s, a))^2 + kappa_reg * w(s) * L_reg(s)
+      with L_reg the SA-DQN regularizer on Q_r.
+
+    Math                                         Code
+    (T_worst^pi Q)(s, a)                         _worst_attack_targets
+    E_{s' ~ P(s, a)}                             replay-buffer sample next_states
+    R(s, a)                                      batch.rewards
+    gamma                                        config.discount_factor
+    min_{a' in A_adv(s', pi)} Q(s', a')          _worst_case_values
+    A_adv(s, pi)                                 ReachableActionEstimator.mask
+    B_eps(s)                                     RobustQBounder.bounds (clipped L-inf ball)
+    Q (worst-attack critic)                      worst_attack_q
+    pi = argmax_a Q_r(s, a)                      robust_q
+    eps_t, kappa_wst(t)                          RampSchedule
+    w(s)                                         _state_importance
+    L_reg                                        SARegularizer
+"""
+
+from __future__ import annotations
+
+from copy import deepcopy
+from dataclasses import dataclass
+from math import exp
+from typing import Literal, NamedTuple
+
 import torch
+from torch import Tensor, nn
+from torch.optim import Adam
 
-"""
-High level overview:
-Math	                            Code
-(T_worst^pi Q)(s,a)	                compute_targets
-E_{s'~P(s,a)}	                    replay-buffer sample next_states
-R(s,a)	                            rewards
-gamma	                            _discount_factor
-min_{a' in A_adv(s',pi)} Q(s',a')   _worst_case_values
-A_adv(s,pi)	                        possible_actions_mask
-B_eps(s)	                        PerturbationLpNorm(inf, eps) / _sample_ball
-Q (worst-attack critic)	            target_q_network
-"""
+from auto_LiRPA import BoundedModule, BoundedTensor
+from auto_LiRPA.perturbations import PerturbationLpNorm
 
-class ActionSetEstimator(Protocol):
-    def possible_actions_mask(self, states: Tensor) -> Tensor:
-        """Bool tensor [batch, num_actions]: True where a in A_adv(s, pi).
 
-        Math: indicator of the set
-            A_adv(s, pi) := {a in A : exists s~ in B_eps(s) s.t. pi(s~) = a}
-        """
-        ...
+class Batch(NamedTuple):
+    states: Tensor  # [batch, *observation_shape]
+    actions: Tensor  # [batch], integer
+    rewards: Tensor  # [batch]
+    next_states: Tensor  # [batch, *observation_shape]
+    terminated: Tensor  # [batch], float 0/1; must exclude time-limit truncation
 
-class WorstAttackBellmanOperator:
+
+class TrainingMetrics(NamedTuple):
+    vanilla_loss: float
+    worst_attack_loss: float
+    robust_td_loss: float
+    regularizer_loss: float
+    epsilon: float
+    kappa_wst: float
+    mean_reachable_actions: float
+
+
+@dataclass(frozen=True)
+class WocaRDQNConfig:
     """
+        Schedule example (paper, Atari, 6M steps): kappa_wst_schedule =
+        RampSchedule(start_step=2_000_000, ramp_steps=4_000_000, final_value=0.5, shape="exponential").
+        Rescale the steps to your training length (for example start at one third).
+    """
+
+    num_actions: int
+    discount_factor: float
+    target_update_coefficient: float
+    learning_rate: float
+    epsilon_schedule: RampSchedule
+    kappa_wst_schedule: RampSchedule
+    kappa_reg: float
+    observation_low: float
+    observation_high: float
+    regularizer_margin: float = 0.0
+    use_double_dqn: bool = True
+    bound_method: str = "IBP"
+    # Per-entry multiplier on epsilon (same shape as one observation or broadcastable),
+    # for example 0 on highway-env's `presence` column. None means 1 everywhere.
+    perturbation_scale: Tensor | None = None
+
+
+class WocaRDQNTrainer:
+    """
+        Trains Q_v, Q_phi and Q_r (Algorithm 2).
+
         Sample-based estimate of the worst-attack Bellman operator (Definition 4.1).
 
         (T_worst^pi Q)(s, a) := E_{s' ~ P(s, a)} [ R(s, a) + gamma * min_{a' in A_adv(s', pi)} Q(s', a') ]
+        A_adv(s, pi) := {a in A : exists s~ in B_eps(s) s.t. pi(s~) = a}
 
         Fixed point of T_worst^pi: the worst-attack value Q_worst^pi, i.e. the
         expected return of pi when an adversary may perturb every observation
         within B_eps and picks the perturbation that minimizes the future value.
-        Learning Q_worst means regressing a network onto the targets below.
+        Learning Q_worst means regressing Q_phi onto the targets of _worst_attack_targets.
+
+        Here pi(s) = argmax_a Q_r(s, a), and A_adv is replaced by its superset A_adv_hat,
+        so the fixed point of the modified operator is a lower bound on Q_worst^pi.
     """
 
     def __init__(
         self,
-        target_q_network: nn.Module,
-        action_set_estimator: ActionSetEstimator,
-        discount_factor: float,
+        vanilla_q: nn.Module,
+        robust_q: BoundedModule,
+        worst_attack_q: nn.Module,
+        config: WocaRDQNConfig,
     ) -> None:
-        # Q in the definition: target copy of the worst-attack critic Q_worst.
-        self._target_q_network = target_q_network
-        # Provides A_adv(s', pi); encapsulates both pi and B_eps.
-        self._action_set_estimator = action_set_estimator
-        # gamma in the definition.
-        self._discount_factor = discount_factor
+        self._vanilla_q = vanilla_q
+        self._target_vanilla_q = self._frozen_copy(vanilla_q)
+        # BoundedModule: the optimizer below must use *its* parameters.
+        self._robust_q = robust_q
+        # Q in the definition: the worst-attack critic Q_phi.
+        self._worst_attack_q = worst_attack_q
+        # config.discount_factor is gamma in the definition.
+        self._config = config
+        # Bounds of Q_r over B_eps(s'); these encode both pi and B_eps.
+        self._bounder = RobustQBounder(
+            robust_q,
+            config.observation_low,
+            config.observation_high,
+            config.perturbation_scale,
+            config.bound_method,
+        )
+        # Provides A_adv_hat(s', pi) from those bounds.
+        self._estimator = ReachableActionEstimator()
+        self._regularizer = SARegularizer(config.regularizer_margin)
+        self._vanilla_optimizer = Adam(vanilla_q.parameters(), lr=config.learning_rate)
+        self._robust_optimizer = Adam(robust_q.parameters(), lr=config.learning_rate)
+        self._worst_attack_optimizer = Adam(worst_attack_q.parameters(), lr=config.learning_rate)
 
     @torch.no_grad()
-    def compute_targets(
-        self,
-        rewards: Tensor,
-        next_states: Tensor,
-        terminated: Tensor,
-    ) -> Tensor:
+    def select_action(self, state: Tensor, exploration_probability: float) -> int:
         """
-            Single-sample estimate of (T_worst^pi Q)(s, a) for a batch of (s, a, r, s').
+            Epsilon-greedy w.r.t. Q_r (the acting policy).
 
-            Math: R(s, a) + gamma * min_{a' in A_adv(s', pi)} Q(s', a')
+            Math: pi(s) = argmax_a Q_r(s, a)
+        """
+        if float(torch.rand(())) < exploration_probability:
+            return int(torch.randint(self._config.num_actions, ()))
+        q_values = self._robust_q(state.unsqueeze(0))
+        return int(q_values.argmax(dim=1))
+
+    def update(self, batch: Batch, step: int) -> TrainingMetrics:
+        epsilon = self._config.epsilon_schedule.value(step)
+        kappa_wst = self._config.kappa_wst_schedule.value(step)
+
+        vanilla_loss = self._update_vanilla_q(batch)
+        self._soft_update_target()
+        worst_attack_loss, mean_reachable = self._update_worst_attack_critic(batch, epsilon)
+        robust_td_loss, regularizer_loss = self._update_robust_q(batch, epsilon, kappa_wst)
+
+        return TrainingMetrics(
+            vanilla_loss=vanilla_loss,
+            worst_attack_loss=worst_attack_loss,
+            robust_td_loss=robust_td_loss,
+            regularizer_loss=regularizer_loss,
+            epsilon=epsilon,
+            kappa_wst=kappa_wst,
+            mean_reachable_actions=mean_reachable,
+        )
+
+    # ----------------------------------------------------------------- Q_v ---
+
+    def _update_vanilla_q(self, batch: Batch) -> float:
+        targets = self._vanilla_targets(batch)
+        predictions = self._gather(self._vanilla_q(batch.states), batch.actions)
+        loss = nn.functional.mse_loss(predictions, targets)
+        self._step(self._vanilla_optimizer, loss)
+        return float(loss.detach())
+
+    @torch.no_grad()
+    def _vanilla_targets(self, batch: Batch) -> Tensor:
+        """
+            Math: r + gamma * Q_v'(s', argmax_a' Q_v(s', a')) (double DQN) or max_a' Q_v'(s', a').
+        """
+        target_q_values = self._target_vanilla_q(batch.next_states)
+        if self._config.use_double_dqn:
+            best_actions = self._vanilla_q(batch.next_states).argmax(dim=1, keepdim=True)
+            next_values = target_q_values.gather(1, best_actions).squeeze(1)
+        else:
+            next_values = target_q_values.max(dim=1).values
+        return self._bootstrap(batch, next_values)
+
+    @torch.no_grad()
+    def _soft_update_target(self) -> None:
+        """
+            Math: theta' <- tau * theta + (1 - tau) * theta'.
+        """
+        tau = self._config.target_update_coefficient
+        for target_parameter, online_parameter in zip(
+            self._target_vanilla_q.parameters(), self._vanilla_q.parameters()
+        ):
+            target_parameter.mul_(1.0 - tau).add_(online_parameter, alpha=tau)
+
+    # --------------------------------------------------------------- Q_phi ---
+
+    def _update_worst_attack_critic(self, batch: Batch, epsilon: float) -> tuple[float, float]:
+        targets, reachable = self._worst_attack_targets(batch, epsilon)
+        predictions = self._gather(self._worst_attack_q(batch.states), batch.actions)
+        loss = nn.functional.mse_loss(predictions, targets)
+        self._step(self._worst_attack_optimizer, loss)
+        mean_reachable = float(reachable.float().sum(dim=1).mean())
+        return float(loss.detach()), mean_reachable
+
+    @torch.no_grad()
+    def _worst_attack_targets(self, batch: Batch, epsilon: float) -> tuple[Tensor, Tensor]:
+        """
+            Single-sample estimate of (T_worst^pi Q_phi)(s, a) for a batch of (s, a, r, s').
+
+            Math: R(s, a) + gamma * min_{a' in A_adv_hat(s')} Q_phi(s', a')
 
             - The expectation E_{s' ~ P(s, a)} is replaced by the one sampled s'
             from the replay buffer. Because the min sits inside the expectation,
@@ -71,145 +228,218 @@ class WorstAttackBellmanOperator:
             - R(s, a) does not depend on s' or a', so it stays outside the min.
             - `terminated` is 1.0 on true terminal transitions (value 0 afterwards)
             and must exclude time-limit truncation, which does not end the MDP. MDP time limit truncation refers to the practice of ending a reinforcement learning episode after a fixed number of timesteps, which breaks the standard Markov Decision Process (MDP) framework if not handled correctly.
+            - Uses Q_phi itself (no target network), as in Algorithm 2.
         """
-        worst_case_values = self._worst_case_values(next_states)
-        not_terminated = 1.0 - terminated
-        return rewards + self._discount_factor * not_terminated * worst_case_values
+        bounds = self._bounder.bounds(batch.next_states, epsilon)
+        reachable = self._estimator.mask(bounds)
+        q_values = self._worst_attack_q(batch.next_states)
+        next_values = self._worst_case_values(q_values, reachable)
+        return self._bootstrap(batch, next_values), reachable
 
-    def _worst_case_values(self, next_states: Tensor) -> Tensor:
+    def _worst_case_values(self, q_values: Tensor, reachable: Tensor) -> Tensor:
         """
-            Math: min_{a' in A_adv(s', pi)} Q(s', a'), for each s' in the batch.
-
-            The set is encoded as a boolean mask. Actions outside the set get +inf,
-            so they can never be the minimizer.
+            Math: min over the reachable set; unreachable actions get +inf.
         """
-        possible_actions = self._action_set_estimator.possible_actions_mask(next_states)
-        q_values = self._target_q_network(next_states)
-        impossible_actions = torch.logical_not(possible_actions)
-        masked_q_values = q_values.masked_fill(impossible_actions, float("inf"))
+        unreachable = torch.logical_not(reachable)
+        return q_values.masked_fill(unreachable, float("inf")).min(dim=1).values
 
-        return masked_q_values.min(dim=1).values
+    # ----------------------------------------------------------------- Q_r ---
 
-class CertifiedActionSetEstimator:
+    def _update_robust_q(
+        self,
+        batch: Batch,
+        epsilon: float,
+        kappa_wst: float,
+    ) -> tuple[float, float]:
+        targets = self._robust_targets(batch, kappa_wst)
+        clean_q_values = self._robust_q(batch.states)
+        td_loss = nn.functional.mse_loss(self._gather(clean_q_values, batch.actions), targets)
+        regularizer_loss = self._weighted_regularizer(batch.states, clean_q_values, epsilon)
+        loss = td_loss + self._config.kappa_reg * regularizer_loss
+        self._step(self._robust_optimizer, loss)
+        return float(td_loss.detach()), float(regularizer_loss.detach())
+
+    @torch.no_grad()
+    def _robust_targets(self, batch: Batch, kappa_wst: float) -> Tensor:
+        """
+            Math: y_r = r + gamma * max_a' [kappa * Q_v'(s', a') + (1 - kappa) * Q_phi(s', a')].
+        """
+        vanilla_values = self._target_vanilla_q(batch.next_states)
+        worst_attack_values = self._worst_attack_q(batch.next_states)
+        mixed_values = kappa_wst * vanilla_values + (1.0 - kappa_wst) * worst_attack_values
+        return self._bootstrap(batch, mixed_values.max(dim=1).values)
+
+    def _weighted_regularizer(
+        self,
+        states: Tensor,
+        clean_q_values: Tensor,
+        epsilon: float,
+    ) -> Tensor:
+        """
+            Math: mean_s [ w(s) * L_reg(s) ]. Gradients flow into Q_r through the bounds.
+        """
+        bounds = self._bounder.bounds(states, epsilon)
+        per_state_loss = self._regularizer.per_state_loss(bounds, clean_q_values)
+        weights = self._state_importance(states)
+        return (weights * per_state_loss).mean()
+
+    @torch.no_grad()
+    def _state_importance(self, states: Tensor) -> Tensor:
+        """
+            Math: w(s) = max_a Q_v(s, a) - min_a Q_v(s, a), divided by its batch maximum.
+        """
+        q_values = self._vanilla_q(states)
+        spread = q_values.max(dim=1).values - q_values.min(dim=1).values
+        return spread / spread.max().clamp(min=1e-8)
+
+    # ------------------------------------------------------------- helpers ---
+
+    def _bootstrap(self, batch: Batch, next_values: Tensor) -> Tensor:
+        not_terminated = 1.0 - batch.terminated
+        return batch.rewards + self._config.discount_factor * not_terminated * next_values
+
+    def _gather(self, q_values: Tensor, actions: Tensor) -> Tensor:
+        return q_values.gather(1, actions.long().unsqueeze(1)).squeeze(1)
+
+    def _step(self, optimizer: Adam, loss: Tensor) -> None:
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    def _frozen_copy(self, network: nn.Module) -> nn.Module:
+        copy = deepcopy(network)
+        for parameter in copy.parameters():
+            parameter.requires_grad_(False)
+        return copy
+
+
+@dataclass(frozen=True)
+class RampSchedule:
     """
-        Over-approximates A_adv(s, pi) with CROWN bounds on pairwise logit differences.
+        0 until start_step, then ramps to final_value over ramp_steps, then stays there.
+    """
 
-        Math: for each pair (i, j), compute a lower bound
-            L_ij(s) <= min_{s~ in B_eps(s)} [ logit_j(s~) - logit_i(s~) ].
-        If L_ij(s) > 0 for some j, then logit_j > logit_i everywhere in B_eps(s),
-        so argmax_a logit_a(s~) != i for every s~ in B_eps(s), hence i not in A_adv(s, pi).
+    start_step: int
+    ramp_steps: int
+    final_value: float
+    shape: Literal["linear", "exponential"] = "linear"
+    growth: float = 5.0  # steepness of the exponential shape
+
+    def __post_init__(self) -> None:
+        if self.ramp_steps <= 0:
+            raise ValueError("ramp_steps must be positive")
+
+    def value(self, step: int) -> float:
+        if step <= self.start_step:
+            return 0.0
+        progress = min((step - self.start_step) / self.ramp_steps, 1.0)
+        if self.shape == "linear":
+            return self.final_value * progress
+        normalizer = exp(self.growth) - 1.0
+        return self.final_value * (exp(self.growth * progress) - 1.0) / normalizer
+
+
+class QValueBounds(NamedTuple):
+    lower: Tensor  # [batch, num_actions]
+    upper: Tensor  # [batch, num_actions]
+
+
+class RobustQBounder:
+    """
+        Output bounds of Q_r over B_eps(s), clipped to the valid observation range.
+
+        Math: Q_l(s, a) <= Q_r(s~, a) <= Q_u(s, a) for all s~ in B_eps(s).
+        B_eps is the L-inf ball: {s~ : ||s~ - s||_inf <= eps}, scaled per entry by perturbation_scale
+        and clipped to the valid range.
+        Assumes observations already lie inside [observation_low, observation_high].
+    """
+
+    def __init__(
+        self,
+        bounded_q_network: BoundedModule,
+        observation_low: float,
+        observation_high: float,
+        perturbation_scale: Tensor | None,
+        method: str,
+    ) -> None:
+        self._bounded_q_network = bounded_q_network
+        self._observation_low = observation_low
+        self._observation_high = observation_high
+        self._perturbation_scale = perturbation_scale
+        self._method = method
+
+    def bounds(self, states: Tensor, epsilon: float) -> QValueBounds:
+        radius = self._radius(states, epsilon)
+        lower_corner = (states - radius).clamp(self._observation_low, self._observation_high)
+        upper_corner = (states + radius).clamp(self._observation_low, self._observation_high)
+        perturbation = PerturbationLpNorm(x_L=lower_corner, x_U=upper_corner)
+        bounded_states = BoundedTensor(states, perturbation)
+        lower, upper = self._bounded_q_network.compute_bounds(
+            x=(bounded_states,), method=self._method
+        )
+        return QValueBounds(lower, upper)
+
+    def _radius(self, states: Tensor, epsilon: float) -> Tensor:
+        if self._perturbation_scale is None:
+            return torch.full_like(states, epsilon)
+        return self._perturbation_scale.to(states.device) * epsilon
+
+
+class ReachableActionEstimator:
+    """
+        Over-approximates A_adv(s, pi) for pi = argmax_a Q_r(s, a) from per-action output bounds.
+
+        Math: A_adv(s, pi) := {a in A : exists s~ in B_eps(s) s.t. pi(s~) = a}.
+        a in A_adv_hat(s) iff Q_u(s, a) >= max_{a' != a} Q_l(s, a').
+        If Q_u(a) < Q_l(a') for some a', then a' beats a everywhere in B_eps(s),
+        so argmax_a Q_r(s~, a) != a for every s~ in B_eps(s), hence a not in A_adv(s, pi).
 
         Soundness: the returned set contains A_adv (it only removes actions that are
         provably unreachable), so min over it is <= min over the true A_adv.
         The target therefore lower-bounds the true worst-attack Bellman target:
         conservative, never optimistic.
 
-        The policy is pi(s) = argmax_a logit_a(s), the greedy policy over the network's outputs (for DQN these are the Q-values).
+        The clean greedy action always satisfies the condition, so the set is never empty.
     """
 
-    def __init__(
-        self,
-        policy_network: nn.Module,
-        epsilon: float,
-        num_actions: int,
-        example_state: Tensor,
-    ) -> None:
-        # Imported here so the sampling estimator works without auto_LiRPA.
-        from auto_LiRPA.auto_LiRPA import BoundedModule
-        
-        # epsilon: radius of the L-inf ball B_eps(s).
-        self._epsilon = epsilon
-        self._num_actions = num_actions
-        self._bounded_policy = BoundedModule(policy_network, torch.empty_like(example_state))
-
-    @torch.no_grad()
-    def possible_actions_mask(self, states: Tensor) -> Tensor:
+    def mask(self, bounds: QValueBounds) -> Tensor:
         """
-            Math: indicator of the over-approximation of A_adv(s, pi).
-
-            Action i is excluded iff exists j with L_ij(s) > 0.
+            Bool tensor [batch, num_actions]: True where a is in A_adv_hat.
         """
-        lower_bounds = self._pairwise_logit_difference_lower_bounds(states)
-        provably_excluded = (lower_bounds > 0).any(dim=2)
-        return torch.logical_not(provably_excluded)
+        competitor_lower = self._highest_competitor_lower_bound(bounds.lower)
+        reachable = bounds.upper >= competitor_lower
+        if not bool(reachable.any(dim=1).all()):
+            raise RuntimeError("Empty reachable action set; check bounds for NaN or inf.")
+        return reachable
 
-    def _pairwise_logit_difference_lower_bounds(self, states: Tensor) -> Tensor:
+    def _highest_competitor_lower_bound(self, lower: Tensor) -> Tensor:
         """
-            Returns [batch, A, A]; entry (b, i, j) is L_ij(s_b), a lower bound on
-            min_{s~ in B_eps(s_b)} (logit_j(s~) - logit_i(s~)).
-
-            B_eps is the L-inf ball: {s~ : ||s~ - s||_inf <= epsilon}.
+            [batch, A]: entry (b, i) = max_{j != i} lower[b, j] (-inf if there is one action).
         """
-        from auto_LiRPA.auto_LiRPA import BoundedTensor
-        from auto_LiRPA.auto_LiRPA.perturbations import PerturbationLpNorm
-
-        perturbation = PerturbationLpNorm(norm=float("inf"), eps=self._epsilon) # type: ignore[arg-type]
-        bounded_states = BoundedTensor(states, perturbation)
-        specification = self._build_specification(states.shape[0], states.device)
-        lower, _ = self._bounded_policy.compute_bounds(
-            x=(bounded_states,), C=specification, method="CROWN"
-        )
-        return lower.view(states.shape[0], self._num_actions, self._num_actions)
-
-    def _build_specification(self, batch_size: int, device: torch.device) -> Tensor:
-        """
-            Linear specification C so that C @ logits = logit_j - logit_i for each (i, j).
-
-            Row (i, j) = e_j - e_i. This asks the bound-propagation method for
-            bounds on the difference directly, which is tighter than bounding
-            each logit separately and subtracting.
-        """
-        identity = torch.eye(self._num_actions, device=device)
-        # Row (i, j) = e_j - e_i, giving logit_j - logit_i.
-        differences = identity.unsqueeze(0) - identity.unsqueeze(1)
-        flattened = differences.view(self._num_actions**2, self._num_actions)
-        return flattened.unsqueeze(0).expand(batch_size, -1, -1)
+        num_actions = lower.shape[1]
+        diagonal = torch.eye(num_actions, dtype=torch.bool, device=lower.device)
+        expanded = lower.unsqueeze(1).expand(-1, num_actions, -1)
+        others = expanded.masked_fill(diagonal.unsqueeze(0), float("-inf"))
+        return others.max(dim=2).values
 
 
-class SampledActionSetEstimator:
+class SARegularizer:
     """
-        Under-approximates A_adv(s, pi) by sampling B_eps(s). Optimistic; sanity checks only.
+        SA-DQN regularizer on Q_r.
 
-        Math: returns {pi(s~_k)} for finitely many s~_k in B_eps(s), a subset of
-        A_adv(s, pi). The min over a subset is >= the min over the full set, so
-        the resulting target can exceed the true worst-attack target. It does not
-        certify robustness and must not be used to train Q_worst.
+        Math: L_reg(s) = max{ max_{a != a*} Q_u(s, a) - Q_l(s, a*), -c },  a* = argmax_a Q_r(s, a).
+        Zero gradient once the clean action is certified to stay best by margin c.
     """
 
-    def __init__(
-        self,
-        policy_network: nn.Module,
-        epsilon: float,
-        num_actions: int,
-        num_samples: int,
-    ) -> None:
-        self._policy_network = policy_network
-        self._epsilon = epsilon
-        self._num_actions = num_actions
-        self._num_samples = num_samples
+    def __init__(self, margin: float) -> None:
+        self._margin = margin
 
-    @torch.no_grad()
-    def possible_actions_mask(self, states: Tensor) -> Tensor:
+    def per_state_loss(self, bounds: QValueBounds, clean_q_values: Tensor) -> Tensor:
         """
-            Math: indicator of {pi(s~_k) : k = 0..K}, with s~_0 = s (the clean state).
+            [batch]: regularizer value per state.
         """
-
-        batch_size = states.shape[0]
-        perturbed_states = self._sample_ball(states)
-        flat_states = perturbed_states.reshape(-1, *states.shape[1:])
-        # pi(s~) = argmax_a logit_a(s~)
-        chosen_actions = self._policy_network(flat_states).argmax(dim=1)
-        chosen_actions = chosen_actions.view(batch_size, self._num_samples + 1)
-        one_hot = nn.functional.one_hot(chosen_actions, self._num_actions).bool()
-        return one_hot.any(dim=1)
-
-    def _sample_ball(self, states: Tensor) -> Tensor:
-        """
-            Returns [batch, num_samples + 1, *state_shape]: s itself plus uniform
-            samples s~ with ||s~ - s||_inf <= epsilon, i.e. points in B_eps(s).
-        """
-        noise_shape = (states.shape[0], self._num_samples, *states.shape[1:])
-        noise = (torch.rand(noise_shape, device=states.device) * 2 - 1) * self._epsilon
-        expanded = states.unsqueeze(1)
-        perturbed = expanded + noise
-        return torch.cat([expanded, perturbed], dim=1)
+        best_actions = clean_q_values.detach().argmax(dim=1)
+        lower_of_best = bounds.lower.gather(1, best_actions.unsqueeze(1)).squeeze(1)
+        best_mask = nn.functional.one_hot(best_actions, num_classes=bounds.upper.shape[1]).bool()
+        upper_of_others = bounds.upper.masked_fill(best_mask, float("-inf")).max(dim=1).values
+        return torch.clamp(upper_of_others - lower_of_best, min=-self._margin)

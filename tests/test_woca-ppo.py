@@ -2,7 +2,7 @@ import pytest
 import torch
 from torch import Tensor, nn
 
-from auto_LiRPA.auto_LiRPA import BoundedModule
+from auto_LiRPA import BoundedModule
 
 # Adjust to the real module name of the file containing the classes.
 from src.marl.woca_r_rl.ppo import (
