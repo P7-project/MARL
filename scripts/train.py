@@ -55,10 +55,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     # WocaR-PPO only (read by train_ppo / ppo_update_wocar)
     parser.add_argument("--env-id", type=str, default="Hopper-v4")
-    parser.add_argument("--eps-final", type=float, default=0.075)  # final attack radius ε
-    parser.add_argument("--kappa-wst-final", type=float, default=0.8)  # final weight of the Q_φ advantage shift
-    parser.add_argument("--kappa-wst-shape", choices=["linear", "exponential"], default="linear")
-    parser.add_argument("--kappa-reg", type=float, default=0.1)  # paper grid: {0.01, 0.03, 0.1, 0.3, 1.0}
+    parser.add_argument("--eps-final", type=float, default=0.075) # Final attack radius ε, the value epsilon_schedule ramps to.
+    parser.add_argument("--kappa-wst-final", type=float, default=0.8) # Final weight of the Q_φ advantage shift. "where κ_wst and κ_reg are hyperparameters balancing between natural performance and robustness"
+    parser.add_argument("--kappa-wst-shape", choices=["linear", "exponential"], default="linear") # linear or exponential, the ramp shape. Exponential only on Ant.
+    parser.add_argument("--kappa-reg", type=float, default=0.1) # Weight of the regularizer term in the actor loss. The paper grid-searches {0.01, 0.03, 0.1, 0.3, 1.0}. "where κ_wst and κ_reg are hyperparameters balancing between natural performance and robustness"
     return parser
 
 
