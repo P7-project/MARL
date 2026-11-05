@@ -23,13 +23,20 @@ Hyperparameters from the paper:
 
 
 
+from multiprocessing.managers import Namespace
 from typing import NamedTuple
 
+from matplotlib.pyplot import box
+import numpy as np
 import torch
 from torch import Tensor, nn
 
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
+from torch.optim import Optimizer
+
+from marl.mappo import compute_gae
+from marl.models import Actor
 
 
 class ActionBox(NamedTuple):
@@ -37,122 +44,234 @@ class ActionBox(NamedTuple):
     upper: Tensor  # [batch, action_dim]
 
 
-class WorstAttackPPOLoss:
-    """Combines the standard PPO loss with the worst-attack value term.
-
-    Math: maximize  E_s[ min_{a in A_adv(s, pi)} Q_worst(s, a) ],
-    where the min is lower-bounded over the box containing A_adv(s, pi).
-    Gradients flow into pi through the box bounds.
-    """
+class WocaRLosses:
+    """Wires the pieces together. Everything below it is called by it."""
 
     def __init__(
         self,
-        worst_value_estimator: "WorstAttackValueEstimator",
-        policy_bounder: "PolicyActionBounder",
-        worst_value_coefficient: float,
-        regularization_coefficient: float,
-    ) -> None:
-        self._worst_value_estimator = worst_value_estimator
-        self._policy_bounder = policy_bounder
-        self._worst_value_coefficient = worst_value_coefficient
-        self._regularization_coefficient = regularization_coefficient
-
-    def compute(self, ppo_loss: Tensor, states: Tensor) -> Tensor:
-        """total = L_PPO - kappa_wst * E[V_worst-bound] + kappa_reg * E[box width]."""
-        box = self._policy_bounder.action_box(states)
-        worst_value = self._worst_value_estimator.lower_bound_over_box(states, box)
-        box_width = (box.upper - box.lower).mean()
-        return (
-            ppo_loss
-            - self._worst_value_coefficient * worst_value.mean()
-            + self._regularization_coefficient * box_width
-        )
-
-
-class WorstAttackQTrainer:
-    """Regresses Q_worst onto targets of the worst-attack Bellman operator (Definition 4.1)."""
-
-    def __init__(
-        self,
+        value_network: nn.Module,
         q_network: nn.Module,
-        target_estimator: "WorstAttackValueEstimator",
-        policy_bounder: "PolicyActionBounder",
+        bounder: "PolicyActionBounder",
+        searcher: "WorstActionSearcher",
+        regularizer: "SgldRegularizer",
         discount_factor: float,
     ) -> None:
+        self._value_network = value_network
         self._q_network = q_network
-        self._target_estimator = target_estimator
-        self._policy_bounder = policy_bounder
+        self._bounder = bounder
+        self._searcher = searcher
+        self._regularizer = regularizer
         self._discount_factor = discount_factor
 
-    def loss(
+    @torch.no_grad()
+    def shift_advantages(
+        self, advantages: Tensor, states: Tensor, actions: Tensor, kappa_wst: float
+    ) -> Tensor:
+        """Advantage + kappa_wst * Q_phi(s, a) at the sampled action."""
+        return advantages + kappa_wst * self._q_values(states, actions)
+
+    def critic_loss(
         self,
         states: Tensor,
         actions: Tensor,
         rewards: Tensor,
+        next_aobs: Tensor,
         next_states: Tensor,
         terminated: Tensor,
+        epsilon: float,
     ) -> Tensor:
-        targets = self._targets(rewards, next_states, terminated)
-        predictions = self._q_network(torch.cat([states, actions], dim=1)).squeeze(-1)
-        return nn.functional.mse_loss(predictions, targets)
+        """MSE onto y = r + gamma * Q_phi(s', a_hat), y = r at terminal states."""
+        worst_actions = self._worst_actions(next_aobs, next_states, epsilon)
+        with torch.no_grad():
+            next_values = self._q_values(next_states, worst_actions)
+            targets = rewards + self._discount_factor * (1.0 - terminated) * next_values
+        return nn.functional.mse_loss(self._q_values(states, actions), targets)
 
-    @torch.no_grad()
-    def _targets(self, rewards: Tensor, next_states: Tensor, terminated: Tensor) -> Tensor:
-        """Math: R(s,a) + gamma * min_{a' in A_adv(s', pi)} Q(s', a'), one sampled s'.
+    def regularizer_loss(self, aobs: Tensor, states: Tensor, epsilon: float) -> Tensor:
+        """mean_s[ w(s) * L_reg(s) ]. Gradients flow only through L_reg."""
+        weights = self._weights(aobs, states, epsilon)
+        return (weights * self._regularizer.per_state_loss(aobs, epsilon)).mean()
 
-        `terminated` is float 0/1 and excludes time-limit truncation.
-        """
-        box = self._policy_bounder.action_box(next_states)
-        worst_values = self._target_estimator.lower_bound_over_box(next_states, box)
-        not_terminated = 1.0 - terminated
-        return rewards + self._discount_factor * not_terminated * worst_values
+    def _weights(self, aobs: Tensor, states: Tensor, epsilon: float) -> Tensor:
+        """w(s) = V(s) - min_a Q_phi(s, a)."""
+        worst_actions = self._worst_actions(aobs, states, epsilon)
+        with torch.no_grad():
+            value = self._value_network(states).squeeze(-1)
+            worst_q = self._q_values(states, worst_actions)
+            # (mine) min over the IBP box at s, clamped at 0.
+            return (value - worst_q).clamp(min=0.0)
 
+    def _worst_actions(self, aobs: Tensor, states: Tensor, epsilon: float) -> Tensor:
+        with torch.no_grad():
+            box = self._bounder.action_box(aobs, epsilon)
+        return self._searcher.search(states, box)
 
-class WorstAttackValueEstimator:
-    """Lower-bounds min_{a' in box} Q(s, a') by propagating bounds through Q's action input.
-
-    Sound: the result is <= the true min over the box, and the box contains
-    A_adv, so the result is <= min_{a' in A_adv} Q(s, a'). Conservative.
-    """
-
-    def __init__(self, bounded_q_network: BoundedModule) -> None:
-        # Wraps a Q network that takes cat([state, action]).
-        self._bounded_q_network = bounded_q_network
-
-    def lower_bound_over_box(self, states: Tensor, box: ActionBox) -> Tensor:
-        lower_input = torch.cat([states, box.lower], dim=1)
-        upper_input = torch.cat([states, box.upper], dim=1)
-        center = (lower_input + upper_input) / 2
-        # State dims have zero width (x_L == x_U); only the action dims vary.
-        perturbation = PerturbationLpNorm(x_L=lower_input, x_U=upper_input)
-        bounded_input = BoundedTensor(center, perturbation)
-        lower, _ = self._bounded_q_network.compute_bounds(x=(bounded_input,), method="CROWN")
-        return lower.squeeze(-1)
+    def _q_values(self, states: Tensor, actions: Tensor) -> Tensor:
+        return self._q_network(torch.cat([states, actions], dim=1)).squeeze(-1)
 
 
-class PolicyActionBounder:
-    """Bounds the policy's mean action over B_eps(s).
+class WorstActionSearcher:
+    """a_hat = argmin_{a in box} Q_phi(s, a): gradient descent, clamped to the box."""
 
-    Math: [a_lo(s), a_hi(s)] with
-        a_lo <= pi(s~) <= a_hi  for all s~ in B_eps(s) (L-inf ball, radius epsilon),
-    hence A_adv(s, pi) is contained in the box. For a Gaussian policy, `pi` here
-    is the mean network (the deterministic action the adversary can shift).
-    """
+    def __init__(self, q_network: nn.Module, steps: int = 50, learning_rate: float = 0.1) -> None:
+        self._q_network = q_network
+        self._steps = steps
+        self._learning_rate = learning_rate  # (mine) not given in the paper
+
+    def search(self, states: Tensor, box: ActionBox) -> Tensor:
+        actions = ((box.lower + box.upper) / 2).clone().requires_grad_(True)
+        for _ in range(self._steps):
+            with torch.enable_grad():
+                q_sum = self._q_network(torch.cat([states, actions], dim=1)).sum()
+                gradient, = torch.autograd.grad(q_sum, actions)
+            with torch.no_grad():
+                actions -= self._learning_rate * gradient
+                actions.copy_(torch.maximum(torch.minimum(actions, box.upper), box.lower))
+        return actions.detach()
+
+
+class SgldRegularizer:
+    """SA-PPO regularizer: L_reg(s) = max_{s~ in B_eps(s)} ||mu(s) - mu(s~)||^2, found by SGLD."""
 
     def __init__(
         self,
-        bounded_policy_mean_network: BoundedModule,
-        epsilon: float,
-        method: str = "IBP",
+        mean_network: nn.Module,
+        steps: int = 10,
+        step_size: float = 0.1,
+        noise_scale: float = 0.01,
     ) -> None:
-        self._bounded_policy_mean_network = bounded_policy_mean_network
-        self._epsilon = epsilon
-        self._method = method
+        self._mean_network = mean_network
+        self._steps = steps
+        self._step_size = step_size
+        self._noise_scale = noise_scale
 
-    def action_box(self, states: Tensor) -> ActionBox:
-        perturbation = PerturbationLpNorm(norm=float("inf"), eps=self._epsilon) # type: ignore[arg-type]  # runtime accepts float
-        bounded_states = BoundedTensor(states, perturbation)
-        lower, upper = self._bounded_policy_mean_network.compute_bounds(
-            x=(bounded_states,), method=self._method
+    def per_state_loss(self, states: Tensor, epsilon: float) -> Tensor:
+        perturbed = self._find_perturbation(states, epsilon)
+        deviation = self._mean_network(states) - self._mean_network(perturbed)
+        return deviation.pow(2).sum(dim=1)
+
+    def _find_perturbation(self, states: Tensor, epsilon: float) -> Tensor:
+        clean_means = self._mean_network(states).detach()
+        perturbed = (states + (torch.rand_like(states) * 2 - 1) * epsilon).detach()
+        for _ in range(self._steps):
+            perturbed.requires_grad_(True)
+            deviation = (self._mean_network(perturbed) - clean_means).pow(2).sum()
+            gradient, = torch.autograd.grad(deviation, perturbed)
+            with torch.no_grad():
+                perturbed = perturbed + self._step_size * gradient
+                perturbed += self._noise_scale * torch.randn_like(perturbed)
+                perturbed = torch.maximum(torch.minimum(perturbed, states + epsilon), states - epsilon)
+        return perturbed.detach()
+
+
+class PolicyActionBounder:
+    """
+        IBP box [mu_lo, mu_hi] of the mean network over B_eps(s).
+        Bounds the policy's mean action over B_eps(s).
+    
+        Math: [a_lo(s), a_hi(s)] with
+            a_lo <= pi(s~) <= a_hi  for all s~ in B_eps(s) (L-inf ball, radius epsilon),
+        hence A_adv(s, pi) is contained in the box. For a Gaussian policy, `pi` here
+        is the mean network (the deterministic action the adversary can shift).
+    """
+
+    def __init__(self, bounded_mean_network: BoundedModule) -> None:
+        self._bounded_mean_network = bounded_mean_network
+
+    def action_box(self, states: Tensor, epsilon: float) -> ActionBox:
+        perturbation = PerturbationLpNorm(norm=float("inf"), eps=epsilon)  # type: ignore[arg-type]
+        lower, upper = self._bounded_mean_network.compute_bounds(
+            x=(BoundedTensor(states, perturbation),), method="IBP"
         )
         return ActionBox(lower, upper)
+
+
+def ppo_update_wocar(
+    actor: Actor,
+    critic: nn.Module,
+    opt_actor: Optimizer,
+    opt_critic: Optimizer,
+    wocar: WocaRLosses, # @woca
+    opt_q: Optimizer, # @woca
+    epsilon: float, # @woca
+    kappa_wst: float, # @woca
+    kappa_reg: float, # @woca
+    buf: dict[str, list],
+    last_value: Tensor,
+    args: Namespace,
+    device: torch.device,
+) -> dict[str, float]:
+    advantages, returns = compute_gae(
+        buf["rew"], buf["val"], buf["done"], last_value, args.gamma, args.lam
+    )
+
+    actor_obs = torch.as_tensor(np.stack(buf["aobs"]), device=device)
+    states = torch.as_tensor(np.stack(buf["state"]), device=device)
+    actions = torch.as_tensor(np.stack(buf["act"]), device=device)
+    old_log_probs = torch.as_tensor(np.stack(buf["logp"]), device=device)
+    advantages = torch.as_tensor(advantages, device=device)
+    returns = torch.as_tensor(returns, device=device)
+    next_states = torch.as_tensor(np.stack(buf["next_state"]), device=device) # @woca
+    terminated = torch.as_tensor(np.stack(buf["terminated"]), device=device).float() # @woca
+    rewards = torch.as_tensor(np.stack(buf["reward_raw"]), device=device) # @woca
+
+    advantages = wocar.shift_advantages(advantages, states, actions, kappa_wst) # @woca
+    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+    horizon = actor_obs.shape[0]
+    stats = {"actor": 0.0, "critic": 0.0, "entropy": 0.0}
+    update_count = 0
+
+    for _ in range(args.epochs):
+        permutation = torch.randperm(horizon, device=device)
+
+        for start in range(0, horizon, args.minibatch):
+            indices = permutation[start : start + args.minibatch]
+
+            # @woca: Q_phi step first, so the regularizer weights use the fresh Q_phi.
+            q_loss: Tensor = wocar.critic_loss(
+                states[indices], actions[indices], rewards[indices],
+                next_states[indices], terminated[indices], epsilon,
+            )
+            opt_q.zero_grad()
+            q_loss.backward()
+            opt_q.step()
+
+            dist = actor.dist(actor_obs[indices])
+            new_log_probs = dist.log_prob(actions[indices])
+            ratio = torch.exp(new_log_probs - old_log_probs[indices])
+            advantage_mb = advantages[indices].unsqueeze(-1)
+            surrogate_1 = ratio * advantage_mb
+            surrogate_2 = torch.clamp(
+                ratio, 1 - args.clip, 1 + args.clip
+            ) * advantage_mb
+            entropy = dist.entropy().mean()
+
+            reg_loss: Tensor = wocar.regularizer_loss(states[indices], epsilon)  # @woca
+            actor_loss = (
+                -torch.min(surrogate_1, surrogate_2).mean()
+                - args.ent * entropy
+                + kappa_reg * reg_loss  # @woca
+            )
+
+            opt_actor.zero_grad()
+            actor_loss.backward()
+            nn.utils.clip_grad_norm_(actor.parameters(), args.max_grad_norm)
+            opt_actor.step()
+
+            value = critic(states[indices])
+            critic_loss = 0.5 * (value - returns[indices]).pow(2).mean()
+
+            opt_critic.zero_grad()
+            critic_loss.backward()
+            nn.utils.clip_grad_norm_(critic.parameters(), args.max_grad_norm)
+            opt_critic.step()
+
+            stats["actor"] += actor_loss.item()
+            stats["critic"] += critic_loss.item()
+            stats["entropy"] += entropy.item()
+            stats["q"] = q_loss.item()  # @woca
+            stats["reg"] = reg_loss.item()  # @woca
+            update_count += 1
+
+    return {key: value / max(update_count, 1) for key, value in stats.items()}

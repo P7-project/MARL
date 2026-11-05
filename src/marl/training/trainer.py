@@ -49,7 +49,13 @@ def train(args):
             f"Training ({steps_done}/{args.total_steps} steps, "
             f"{len(finished_returns)} episodes, {iteration} iterations)..."
         ):
-            buf = {key: [] for key in ("aobs", "state", "act", "logp", "rew", "done", "val")}
+            buf = {
+                key: []
+                for key in (
+                    "aobs", "state", "act", "logp", "rew", "done", "val",
+                    "next_aobs", "next_state", "terminated", "reward_raw",  # @woca
+                )
+            }
 
             with Live(console=console, refresh_per_second=0.1) as rollout_live:
                 for rollout_step in range(args.rollout):
@@ -85,6 +91,10 @@ def train(args):
                     buf["rew"].append(train_reward)
                     buf["done"].append(float(done))
                     buf["val"].append(value)
+                    buf["next_aobs"].append(build_actor_obs(next_obs, n_agents))  # @woca, still pre-reset here
+                    buf["next_state"].append(next_obs.reshape(-1))  # @woca
+                    buf["terminated"].append(float(terminated))  # @woca
+                    buf["reward_raw"].append(reward)  # @woca
 
                     episode_return += reward
                     steps_done += 1
