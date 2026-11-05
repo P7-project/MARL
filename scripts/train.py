@@ -1,23 +1,35 @@
 import argparse
-from datetime import datetime
+import re
 import sys
-from pathlib import Path
+from datetime import datetime
 from enum import Enum
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from marl.training.trainer import train
+from marl.woca_r_rl.ppo import train_ppo  # adjust to your real module path
 
+DEFAULT_SAVE_STEM: str = "default_save_name"
 
 class UpdateFunction(Enum):
     mappo = "mappo"
     wocar = "wocar"
 
-class KappaWorstShape(Enum):
-    linear = "linear"
-    exponential = "exponential"
 
-def main():
+def main() -> None:
+    parser: argparse.ArgumentParser = build_parser()
+    args: argparse.Namespace = parser.parse_args()
+
+    if args.update_function is UpdateFunction.wocar.value:
+        train_ppo(args)
+    elif args.update_function is UpdateFunction.mappo.value:
+        train(args)
+    else:
+        raise NotImplementedError(f"Update function {args.update_function} is not implemented!")
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--agents", type=int, default=3)
     parser.add_argument("--total-steps", type=int, default=200_000)
@@ -32,16 +44,37 @@ def main():
     parser.add_argument("--ent", type=float, default=0.01)
     parser.add_argument("--max-grad-norm", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--save", type=str, default="mappo.pt")
+    parser.add_argument("--save", type=str, default=get_default_save_name())
     parser.add_argument("--logdir", type=str, default="runs")
     parser.add_argument("--run-name", type=str, default=datetime.now().strftime("%Y%m%d-%H%M%S"))
-    parser.add_argument("--update-function", choices=UpdateFunction.__dict__.values(), default=UpdateFunction.mappo)
-    parser.add_argument("--epsilon_final", type=float, default=0.075) # Final attack radius ε, the value epsilon_schedule ramps to.
-    parser.add_argument("--kappa_wst_final", type=float, default=0.8) # Final weight of the Q_φ advantage shift. "where κ_wst and κ_reg are hyperparameters balancing between natural performance and robustness"
-    parser.add_argument("--kappa_wst_shape", choices=KappaWorstShape.__dict__.values(), default="linear") # linear or exponential, the ramp shape. Exponential only on Ant.
-    parser.add_argument("--kappa_reg", type=float, default=0.1) # Weight of the regularizer term in the actor loss. The paper grid-searches {0.01, 0.03, 0.1, 0.3, 1.0}. "where κ_wst and κ_reg are hyperparameters balancing between natural performance and robustness"
+    parser.add_argument(
+        "--update-function",
+        choices=[f.value for f in UpdateFunction],
+        default=UpdateFunction.mappo,
+    )
 
-    train(parser.parse_args())
+    # WocaR-PPO only (read by train_ppo / ppo_update_wocar)
+    parser.add_argument("--env-id", type=str, default="Hopper-v4")
+    parser.add_argument("--eps-final", type=float, default=0.075)  # final attack radius ε
+    parser.add_argument("--kappa-wst-final", type=float, default=0.8)  # final weight of the Q_φ advantage shift
+    parser.add_argument("--kappa-wst-shape", choices=["linear", "exponential"], default="linear")
+    parser.add_argument("--kappa-reg", type=float, default=0.1)  # paper grid: {0.01, 0.03, 0.1, 0.3, 1.0}
+    return parser
+
+
+def get_default_save_name(save_directory: Path = Path(".")) -> str:
+    next_number: int = _highest_save_number(save_directory) + 1
+    return str(save_directory / f"{DEFAULT_SAVE_STEM}.{next_number}.pt")
+
+
+def _highest_save_number(save_directory: Path) -> int:
+    pattern: re.Pattern[str] = re.compile(rf"^{re.escape(DEFAULT_SAVE_STEM)}\.(\d+)\.pt$")
+    numbers: list[int] = []
+    for path in save_directory.glob(f"{DEFAULT_SAVE_STEM}.*.pt"):
+        match: re.Match[str] | None = pattern.match(path.name)
+        if match is not None:
+            numbers.append(int(match.group(1)))
+    return max(numbers, default=0)
 
 
 if __name__ == "__main__":
