@@ -42,12 +42,22 @@ from dataclasses import dataclass
 from math import exp
 from typing import Literal, NamedTuple
 
+from gymnasium import spaces
 import torch
 from torch import Tensor, nn
 from torch.optim import Adam
 
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
+
+from models import mlp
+
+from argparse import Namespace
+
+import numpy as np
+from torch.utils.tensorboard import SummaryWriter
+
+from ..env import build_actor_obs, flatten_obs, make_env
 
 
 class Batch(NamedTuple):
@@ -171,6 +181,9 @@ class WocaRDQNTrainer:
             kappa_wst=kappa_wst,
             mean_reachable_actions=mean_reachable,
         )
+
+    def robust_q_state_dict(self) -> dict[str, Tensor]:
+        return self._robust_q.state_dict()
 
     # ----------------------------------------------------------------- Q_v ---
 
@@ -443,3 +456,151 @@ class SARegularizer:
         best_mask = nn.functional.one_hot(best_actions, num_classes=bounds.upper.shape[1]).bool()
         upper_of_others = bounds.upper.masked_fill(best_mask, float("-inf")).max(dim=1).values
         return torch.clamp(upper_of_others - lower_of_best, min=-self._margin)
+
+
+def train_dqn(args: Namespace) -> None:
+    device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+
+    n_agents: int = args.agents
+    env = make_env(n_agents)
+    observation_space = env.observation_space
+    action_space = env.action_space
+    assert isinstance(observation_space, spaces.Tuple)
+    assert isinstance(action_space, spaces.Tuple)
+    first_observation_space = observation_space.spaces[0]
+    first_action_space = action_space.spaces[0]
+    assert isinstance(first_observation_space, spaces.Box)
+    assert isinstance(first_action_space, spaces.Discrete)
+
+    obs_dim: int = int(np.prod(first_observation_space.shape))
+    n_actions: int = int(first_action_space.n)
+    input_dim: int = obs_dim + n_agents
+
+    trainer: WocaRDQNTrainer = _build_trainer(obs_dim, n_agents, n_actions, args, device)
+    buffer: ReplayBuffer = ReplayBuffer(args.buffer_size, input_dim, device)
+    writer: SummaryWriter = SummaryWriter(f"{args.logdir}/{args.run_name}")
+
+    obs: np.ndarray = flatten_obs(env.reset(seed=args.seed)[0])
+    episode_return: float = 0.0
+
+    for step in range(args.total_steps):
+        actor_obs: Tensor = _to_tensor(build_actor_obs(obs, n_agents), device)  # [n_agents, input_dim]
+        actions: list[int] = _select_actions(trainer, actor_obs, _exploration_probability(step, args))
+
+        next_obs, reward, terminated, truncated, _info = env.step(tuple(actions))
+        next_obs = flatten_obs(next_obs)
+        # Built before any reset, so it is the real next observation.
+        next_actor_obs: Tensor = _to_tensor(build_actor_obs(next_obs, n_agents), device)
+
+        for agent in range(n_agents):
+            buffer.add(actor_obs[agent], actions[agent], float(reward), next_actor_obs[agent], float(terminated))
+
+        episode_return += float(reward)
+        if terminated or truncated:
+            writer.add_scalar("episode/return", episode_return, step)
+            episode_return = 0.0
+            next_obs = flatten_obs(env.reset()[0])
+        obs = next_obs
+
+        if len(buffer) >= args.warmup:
+            metrics = trainer.update(buffer.sample(args.batch_size), step)  # global env step drives eps_t, kappa_wst
+            if step % 100 == 0:
+                for name, value in metrics._asdict().items():
+                    writer.add_scalar(f"woca/{name}", value, step)
+
+    if args.save:
+        torch.save(trainer.robust_q_state_dict(), args.save)
+    writer.close()
+    env.close()
+
+
+def _build_trainer(
+    obs_dim: int, n_agents: int, n_actions: int, args: Namespace, device: torch.device
+) -> WocaRDQNTrainer:
+    input_dim: int = obs_dim + n_agents
+    vanilla_q: nn.Module = mlp(input_dim, n_actions, args.hidden, out_gain=1.0).to(device)
+    worst_attack_q: nn.Module = mlp(input_dim, n_actions, args.hidden, out_gain=1.0).to(device)
+    robust_q: BoundedModule = BoundedModule(
+        mlp(input_dim, n_actions, args.hidden, out_gain=1.0).to(device),
+        torch.zeros(1, input_dim, device=device),
+        device=device.type,
+    )
+    # Perturb the observation part, never the one-hot agent id.
+    perturbation_scale: Tensor = torch.cat(
+        [torch.ones(obs_dim), torch.zeros(n_agents)]
+    ).to(device)
+
+    config: WocaRDQNConfig = WocaRDQNConfig(
+        num_actions=n_actions,
+        discount_factor=args.gamma,
+        target_update_coefficient=args.tau,
+        learning_rate=args.lr,
+        # (our choice) ramp windows rescaled from the paper's 6M-step Atari schedule.
+        epsilon_schedule=RampSchedule(
+            start_step=args.warmup,
+            ramp_steps=args.total_steps - args.warmup,
+            final_value=args.eps_final,
+        ),
+        kappa_wst_schedule=RampSchedule(
+            start_step=args.total_steps // 3,
+            ramp_steps=args.total_steps - args.total_steps // 3,
+            final_value=0.5,
+            shape="exponential",
+        ),
+        kappa_reg=args.kappa_reg,
+        observation_low=-1.0,  # verify against your env's observation config
+        observation_high=1.0,
+        perturbation_scale=perturbation_scale,
+    )
+    return WocaRDQNTrainer(vanilla_q, robust_q, worst_attack_q, config)
+
+
+def _select_actions(trainer: WocaRDQNTrainer, actor_obs: Tensor, exploration_probability: float) -> list[int]:
+    return [trainer.select_action(agent_obs, exploration_probability) for agent_obs in actor_obs]
+
+
+def _exploration_probability(step: int, args: Namespace) -> float:
+    """(mine) linear decay from 1.0 to explore_final over explore_steps."""
+    progress: float = min(step / args.explore_steps, 1.0)
+    return 1.0 + progress * (args.explore_final - 1.0)
+
+
+def _to_tensor(array: np.ndarray, device: torch.device) -> Tensor:
+    return torch.as_tensor(array, dtype=torch.float32, device=device)
+
+
+class ReplayBuffer:
+    def __init__(self, capacity: int, input_dim: int, device: torch.device) -> None:
+        self._capacity: int = capacity
+        self._device: torch.device = device
+        self._size: int = 0
+        self._cursor: int = 0
+        self._states: Tensor = torch.zeros(capacity, input_dim, device=device)
+        self._actions: Tensor = torch.zeros(capacity, dtype=torch.long, device=device)
+        self._rewards: Tensor = torch.zeros(capacity, device=device)
+        self._next_states: Tensor = torch.zeros(capacity, input_dim, device=device)
+        self._terminated: Tensor = torch.zeros(capacity, device=device)
+
+    def __len__(self) -> int:
+        return self._size
+
+    def add(self, state: Tensor, action: int, reward: float, next_state: Tensor, terminated: float) -> None:
+        self._states[self._cursor] = state
+        self._actions[self._cursor] = action
+        self._rewards[self._cursor] = reward
+        self._next_states[self._cursor] = next_state
+        self._terminated[self._cursor] = terminated
+        self._cursor = (self._cursor + 1) % self._capacity
+        self._size = min(self._size + 1, self._capacity)
+
+    def sample(self, batch_size: int) -> Batch:
+        indices: Tensor = torch.randint(self._size, (batch_size,), device=self._device)
+        return Batch(
+            states=self._states[indices],
+            actions=self._actions[indices],
+            rewards=self._rewards[indices],
+            next_states=self._next_states[indices],
+            terminated=self._terminated[indices],
+        )
