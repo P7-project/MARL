@@ -8,21 +8,25 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from marl.training.trainer import train
-from marl.woca_r_rl.ppo import train_ppo  # adjust to your real module path
+from marl.woca_r_rl.ppo import train_ppo
+from marl.woca_r_rl.dqn import train_dqn
 
 DEFAULT_SAVE_STEM: str = "default_save_name"
 
 class UpdateFunction(Enum):
     mappo = "mappo"
-    wocar = "wocar"
+    wocar_ppo = "wocar_ppo"
+    wocar_dqn = "wocar_dqn"
 
 
 def main() -> None:
     parser: argparse.ArgumentParser = build_parser()
     args: argparse.Namespace = parser.parse_args()
 
-    if args.update_function is UpdateFunction.wocar.value:
+    if args.update_function is UpdateFunction.wocar_ppo.value:
         train_ppo(args)
+    elif args.update_function is UpdateFunction.wocar_dqn.value:
+        train_dqn(args)
     elif args.update_function is UpdateFunction.mappo.value:
         train(args)
     else:
@@ -52,13 +56,25 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[f.value for f in UpdateFunction],
         default=UpdateFunction.mappo,
     )
+    parser.add_argument("--kappa-reg", type=float, default=0.1) # Weight of the regularizer term in the actor loss. The paper grid-searches {0.01, 0.03, 0.1, 0.3, 1.0}. "where κ_wst and κ_reg are hyperparameters balancing between natural performance and robustness"
+    parser.add_argument("--eps-final", type=float, default=0.075) # Final attack radius ε, the value epsilon_schedule ramps to.    
 
     # WocaR-PPO only (read by train_ppo / ppo_update_wocar)
     parser.add_argument("--env-id", type=str, default="Hopper-v4")
-    parser.add_argument("--eps-final", type=float, default=0.075) # Final attack radius ε, the value epsilon_schedule ramps to.
+
     parser.add_argument("--kappa-wst-final", type=float, default=0.8) # Final weight of the Q_φ advantage shift. "where κ_wst and κ_reg are hyperparameters balancing between natural performance and robustness"
     parser.add_argument("--kappa-wst-shape", choices=["linear", "exponential"], default="linear") # linear or exponential, the ramp shape. Exponential only on Ant.
-    parser.add_argument("--kappa-reg", type=float, default=0.1) # Weight of the regularizer term in the actor loss. The paper grid-searches {0.01, 0.03, 0.1, 0.3, 1.0}. "where κ_wst and κ_reg are hyperparameters balancing between natural performance and robustness"
+
+    # WocaR-DQN (read by train_dqn / dqn_update_wocar)
+        # WocaR-DQN only (read by train_dqn)
+    parser.add_argument("--hidden", type=int, default=64)  # width of the three Q-networks
+    parser.add_argument("--tau", type=float, default=0.005)  # soft-update coefficient for Q_v'
+    parser.add_argument("--lr", type=float, default=1e-4)  # learning rate for Q_v, Q_phi and Q_r
+    parser.add_argument("--buffer-size", type=int, default=100_000)  # replay buffer capacity, in transitions (one per agent per env step)
+    parser.add_argument("--warmup", type=int, default=5_000)  # transitions in the buffer before updates start; also when eps_t starts ramping
+    parser.add_argument("--batch-size", type=int, default=64)  # minibatch size per update
+    parser.add_argument("--explore-steps", type=int, default=50_000)  # env steps over which the exploration probability decays
+    parser.add_argument("--explore-final", type=float, default=0.05)  # final epsilon-greedy exploration probability
     return parser
 
 

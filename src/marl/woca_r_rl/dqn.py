@@ -50,7 +50,7 @@ from torch.optim import Adam
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
 
-from models import mlp
+from ..models import mlp
 
 from argparse import Namespace
 
@@ -221,6 +221,9 @@ class WocaRDQNTrainer:
     # --------------------------------------------------------------- Q_phi ---
 
     def _update_worst_attack_critic(self, batch: Batch, epsilon: float) -> tuple[float, float]:
+        """
+            Math: MSE regression of Q_phi onto (T_worst^pi Q_phi)(s, a) for a batch of (s, a, r, s').
+        """
         targets, reachable = self._worst_attack_targets(batch, epsilon)
         predictions = self._gather(self._worst_attack_q(batch.states), batch.actions)
         loss = nn.functional.mse_loss(predictions, targets)
@@ -264,6 +267,10 @@ class WocaRDQNTrainer:
         epsilon: float,
         kappa_wst: float,
     ) -> tuple[float, float]:
+        """
+            y_r = r + gamma * max_a' [kappa * Q_v'(s', a') + (1 - kappa) * Q_phi(s', a')]
+            loss = (Q_r(s, a) - y_r)^2 + kappa_reg * means_s [ w(s) * L_reg(s) ]. 
+        """
         targets = self._robust_targets(batch, kappa_wst)
         clean_q_values = self._robust_q(batch.states)
         td_loss = nn.functional.mse_loss(self._gather(clean_q_values, batch.actions), targets)
@@ -280,8 +287,8 @@ class WocaRDQNTrainer:
         vanilla_values = self._target_vanilla_q(batch.next_states)
         worst_attack_values = self._worst_attack_q(batch.next_states)
         mixed_values = kappa_wst * vanilla_values + (1.0 - kappa_wst) * worst_attack_values
-        return self._bootstrap(batch, mixed_values.max(dim=1).values)
-
+        return self._bootstrap(batch, mixed_values.max(dim=1).values) 
+    
     def _weighted_regularizer(
         self,
         states: Tensor,
@@ -308,10 +315,16 @@ class WocaRDQNTrainer:
     # ------------------------------------------------------------- helpers ---
 
     def _bootstrap(self, batch: Batch, next_values: Tensor) -> Tensor:
+        """
+            Math: r + gamma * (1 - terminated) * next_values
+        """
         not_terminated = 1.0 - batch.terminated
         return batch.rewards + self._config.discount_factor * not_terminated * next_values
 
     def _gather(self, q_values: Tensor, actions: Tensor) -> Tensor:
+        """
+            Math: Q(s, a) for a batch of (s, a).
+        """
         return q_values.gather(1, actions.long().unsqueeze(1)).squeeze(1)
 
     def _step(self, optimizer: Adam, loss: Tensor) -> None:
