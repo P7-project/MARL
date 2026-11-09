@@ -43,6 +43,7 @@ from math import exp
 from typing import Literal, NamedTuple
 
 from gymnasium import spaces
+from rich.console import Console
 import torch
 from torch import Tensor, nn
 from torch.optim import Adam
@@ -471,57 +472,60 @@ class SARegularizer:
         return torch.clamp(upper_of_others - lower_of_best, min=-self._margin)
 
 
-def train_dqn(args: Namespace) -> None:
-    device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+def train_dqn(args: Namespace, console: Console) -> None:
+    with console.status("[bold green]Setting up WocaR-DQN..."):
+        device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
 
-    n_agents: int = args.agents
-    env = make_env(n_agents)
-    observation_space = env.observation_space
-    action_space = env.action_space
-    assert isinstance(observation_space, spaces.Tuple)
-    assert isinstance(action_space, spaces.Tuple)
-    first_observation_space = observation_space.spaces[0]
-    first_action_space = action_space.spaces[0]
-    assert isinstance(first_observation_space, spaces.Box)
-    assert isinstance(first_action_space, spaces.Discrete)
+        n_agents: int = args.agents
+        env = make_env(n_agents)
+        observation_space = env.observation_space
+        action_space = env.action_space
+        assert isinstance(observation_space, spaces.Tuple)
+        assert isinstance(action_space, spaces.Tuple)
+        first_observation_space = observation_space.spaces[0]
+        first_action_space = action_space.spaces[0]
+        assert isinstance(first_observation_space, spaces.Box)
+        assert isinstance(first_action_space, spaces.Discrete)
 
-    obs_dim: int = int(np.prod(first_observation_space.shape))
-    n_actions: int = int(first_action_space.n)
-    input_dim: int = obs_dim + n_agents
+        obs_dim: int = int(np.prod(first_observation_space.shape))
+        n_actions: int = int(first_action_space.n)
+        input_dim: int = obs_dim + n_agents
 
-    trainer: WocaRDQNTrainer = _build_trainer(obs_dim, n_agents, n_actions, args, device)
-    buffer: ReplayBuffer = ReplayBuffer(args.buffer_size, input_dim, device)
-    writer: SummaryWriter = SummaryWriter(f"{args.logdir}/{args.run_name}")
+        trainer: WocaRDQNTrainer = _build_trainer(obs_dim, n_agents, n_actions, args, device)
+        buffer: ReplayBuffer = ReplayBuffer(args.buffer_size, input_dim, device)
+        writer: SummaryWriter = SummaryWriter(f"{args.logdir}/{args.run_name}")
 
-    obs: np.ndarray = flatten_obs(env.reset(seed=args.seed)[0])
-    episode_return: float = 0.0
+        obs: np.ndarray = flatten_obs(env.reset(seed=args.seed)[0])
+        episode_return: float = 0.0
 
-    for step in range(args.total_steps):
-        actor_obs: Tensor = _to_tensor(build_actor_obs(obs, n_agents), device)  # [n_agents, input_dim]
-        actions: list[int] = _select_actions(trainer, actor_obs, _exploration_probability(step, args))
+    with console.status(f"[bold green]Training WocaR-DQN (0/{args.total_steps})...") as training_status:
+        for step in range(args.total_steps):
+            training_status.update(f"[bold green]Training WocaR-DQN ({step}/{args.total_steps})...")
+            actor_obs: Tensor = _to_tensor(build_actor_obs(obs, n_agents), device)  # [n_agents, input_dim]
+            actions: list[int] = _select_actions(trainer, actor_obs, _exploration_probability(step, args))
 
-        next_obs, reward, terminated, truncated, _info = env.step(tuple(actions))
-        next_obs = flatten_obs(next_obs)
-        # Built before any reset, so it is the real next observation.
-        next_actor_obs: Tensor = _to_tensor(build_actor_obs(next_obs, n_agents), device)
+            next_obs, reward, terminated, truncated, _info = env.step(tuple(actions))
+            next_obs = flatten_obs(next_obs)
+            # Built before any reset, so it is the real next observation.
+            next_actor_obs: Tensor = _to_tensor(build_actor_obs(next_obs, n_agents), device)
 
-        for agent in range(n_agents):
-            buffer.add(actor_obs[agent], actions[agent], float(reward), next_actor_obs[agent], float(terminated))
+            for agent in range(n_agents):
+                buffer.add(actor_obs[agent], actions[agent], float(reward), next_actor_obs[agent], float(terminated))
 
-        episode_return += float(reward)
-        if terminated or truncated:
-            writer.add_scalar("episode/return", episode_return, step)
-            episode_return = 0.0
-            next_obs = flatten_obs(env.reset()[0])
-        obs = next_obs
+            episode_return += float(reward)
+            if terminated or truncated:
+                writer.add_scalar("episode/return", episode_return, step)
+                episode_return = 0.0
+                next_obs = flatten_obs(env.reset()[0])
+            obs = next_obs
 
-        if len(buffer) >= args.warmup:
-            metrics = trainer.update(buffer.sample(args.batch_size), step)  # global env step drives eps_t, kappa_wst
-            if step % 100 == 0:
-                for name, value in metrics._asdict().items():
-                    writer.add_scalar(f"woca/{name}", value, step)
+            if len(buffer) >= args.warmup:
+                metrics = trainer.update(buffer.sample(args.batch_size), step)  # global env step drives eps_t, kappa_wst
+                if step % 100 == 0:
+                    for name, value in metrics._asdict().items():
+                        writer.add_scalar(f"woca/{name}", value, step)
 
     if args.save:
         torch.save(trainer.robust_q_state_dict(), args.save)

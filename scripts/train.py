@@ -5,6 +5,8 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
+from rich.console import Console
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from marl.training.trainer import train
@@ -12,6 +14,8 @@ from marl.woca_r_rl.ppo import train_ppo
 from marl.woca_r_rl.dqn import train_dqn
 
 DEFAULT_SAVE_STEM: str = "default_save_name"
+
+console = Console()
 
 class UpdateFunction(Enum):
     mappo = "mappo"
@@ -22,12 +26,12 @@ class UpdateFunction(Enum):
 def main() -> None:
     parser: argparse.ArgumentParser = build_parser()
     args: argparse.Namespace = parser.parse_args()
-
-    if args.update_function is UpdateFunction.wocar_ppo.value:
+    
+    if args.update_function == UpdateFunction.wocar_ppo.value:
         train_ppo(args)
-    elif args.update_function is UpdateFunction.wocar_dqn.value:
-        train_dqn(args)
-    elif args.update_function is UpdateFunction.mappo.value:
+    elif args.update_function == UpdateFunction.wocar_dqn.value:
+        train_dqn(args, console)
+    elif args.update_function == UpdateFunction.mappo.value:
         train(args)
     else:
         raise NotImplementedError(f"Update function {args.update_function} is not implemented!")
