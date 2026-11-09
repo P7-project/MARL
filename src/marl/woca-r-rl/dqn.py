@@ -115,7 +115,7 @@ class CertifiedActionSetEstimator:
         example_state: Tensor,
     ) -> None:
         # Imported here so the sampling estimator works without auto_LiRPA.
-        from auto_LiRPA.auto_LiRPA import BoundedModule
+        from auto_LiRPA import BoundedModule
         
         # epsilon: radius of the L-inf ball B_eps(s).
         self._epsilon = epsilon
@@ -140,8 +140,8 @@ class CertifiedActionSetEstimator:
 
             B_eps is the L-inf ball: {s~ : ||s~ - s||_inf <= epsilon}.
         """
-        from auto_LiRPA.auto_LiRPA import BoundedTensor
-        from auto_LiRPA.auto_LiRPA.perturbations import PerturbationLpNorm
+        from auto_LiRPA import BoundedTensor
+        from auto_LiRPA.perturbations import PerturbationLpNorm
 
         perturbation = PerturbationLpNorm(norm=float("inf"), eps=self._epsilon) # type: ignore[arg-type]
         bounded_states = BoundedTensor(states, perturbation)
