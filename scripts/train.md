@@ -5,7 +5,7 @@ One entry point, three training modes selected by `--update-function`.
 | Value | Algorithm | Trainer | Environment |
 |---|---|---|---|
 | `mappo` | MAPPO baseline | `train` | multi-agent highway, discrete actions |
-| `wocar` | WocaR-PPO (Algorithm 1) | `train_ppo` | single-agent Mujoco, continuous actions |
+| `wocar_ppo` | WocaR-PPO (Algorithm 1) | `train_ppo` | single-agent Mujoco, continuous actions |
 | `wocar_dqn` | WocaR-DQN (Algorithm 2) | `train_dqn` | multi-agent highway, discrete actions |
 
 Replace `scripts/train.py` below with the real path of your entry script.
@@ -29,8 +29,6 @@ python scripts/train.py --update-function wocar_dqn --agents 3 \
 # Short smoke test for WocaR-DQN (total-steps must exceed warmup)
 python scripts/train.py --update-function wocar_dqn --total-steps 5000 --warmup 500
 ```
-
-Mujoco environments need `pip install "gymnasium[mujoco]"`.
 
 ## Which arguments each mode reads
 
