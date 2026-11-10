@@ -155,36 +155,63 @@ def update_target_networks(q_networks, target_q_networks):
         )
 
 
+
+# --------------------------------------------------
+# Select Action
+# --------------------------------------------------
+
+def select_action(q_network, state, epsilon, action_dim):
+    # Explore: choose a random action.
+    if random.random() < epsilon:
+        return random.randrange(action_dim)
+
+    # Exploit: choose the action with the highest Q-value.
+    with torch.no_grad():
+        state = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0)
+        q_values = q_network(state)
+        return q_values.argmax(dim=1).item()
+
+    
 # --------------------------------------------------
 # Experience collection
 # --------------------------------------------------
 
-def collect_experiences(env, n_agents, num_steps):
+def collect_experiences(  env, q_networks, n_agents, num_steps, epsilon, action_dim):
     """
-    Collect experiences for each agent by interacting with the environment.
+        Collect experiences for each agent by interacting with the environment
+        using epsilon-greedy action selection.
 
-    Parameters:
-        env: The multi-agent highway environment.
-        n_agents: Number of controlled agents
-        num_steps: Number of environment interactions to perform.
+        Parameters:
+            env: The multi-agent highway environment.
+            q_networks: Separate Q-network for each agent.
+            n_agents: Number of controlled agents.
+            num_steps: Number of environment interactions to perform.
+            epsilon: Probability of selecting a random action (exploration).
+            action_dim: Number of possible actions per agent.
 
-    Returns:
-        agent_transitions: Separate list of experiences for each agent.
-        Each transition contains (state, action, reward, next_state, terminated).
+        Returns:
+            agent_transitions: Separate list of experiences for each agent.
+            Each transition contains (state, action, reward, next_state, terminated).
     """
 
     # Reset the environment to start a new episode.
     obs, info = env.reset()
 
-    
     # Create a separate list for storing experiences for each agent.
     agent_transitions = [[] for _ in range(n_agents)]
 
     for step in range(num_steps):
+        # Flatten observations so each agent gets its own state vector.
+        obs_flat = flatten_obs(obs)
 
-        # Randomly sample one action for each agent from its action space.
+        # Let each agent select an action using its own Q-network.
         actions = tuple(
-            env.action_space[i].sample()
+            select_action(
+                q_networks[i],
+                obs_flat[i],
+                epsilon,
+                action_dim
+            )
             for i in range(n_agents)
         )
 
@@ -192,7 +219,6 @@ def collect_experiences(env, n_agents, num_steps):
         next_obs, rewards, terminated, truncated, info = env.step(actions)
 
         # Convert each agent's current observation into a flat vector.
-        obs_flat = flatten_obs(obs)
         next_obs_flat = flatten_obs(next_obs)
 
         # Store one transition for each agent.
@@ -444,11 +470,14 @@ def main():
         render_mode="human" if render else None)
 
     try:
-         # Let the agents interact with the environment and collect experiences.
+        # Let the agents interact with the environment and collect experiences.
         agent_transitions = collect_experiences(
             env,
+            q_networks,
             n_agents,
             num_steps,
+            epsilon,
+            action_dim,
         )
     finally:
         # Ensure the environment is closed after collection.
