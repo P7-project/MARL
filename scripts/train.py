@@ -9,6 +9,7 @@ from rich.console import Console
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from marl.rendering import add_render_arguments
 from marl.training.trainer import train
 from marl.woca_r_rl.ppo import train_ppo
 from marl.woca_r_rl.dqn import train_dqn
@@ -39,6 +40,7 @@ def main() -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
+    add_render_arguments(parser)
     parser.add_argument("--agents", type=int, default=3)
     parser.add_argument("--total-steps", type=int, default=200_000)
     parser.add_argument("--rollout", type=int, default=512, help="joint env steps per update")

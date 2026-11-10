@@ -60,6 +60,10 @@ from torch.utils.tensorboard import SummaryWriter
 
 from ..env import build_actor_obs, flatten_obs, make_env
 
+from functools import partial
+
+from ..rendering import AsyncPolicyRenderer, PolicyPlayer, Weights, create_renderer
+
 
 class Batch(NamedTuple):
     states: Tensor  # [batch, *observation_shape]
@@ -496,6 +500,9 @@ def train_dqn(args: Namespace, console: Console) -> None:
         trainer: WocaRDQNTrainer = _build_trainer(obs_dim, n_agents, n_actions, args, device)
         buffer: ReplayBuffer = ReplayBuffer(args.buffer_size, input_dim, device)
         writer: SummaryWriter = SummaryWriter(f"{args.logdir}/{args.run_name}")
+        renderer: AsyncPolicyRenderer | None = create_renderer(
+            args, partial(DqnPlayer, n_agents, obs_dim, n_actions, args.hidden)
+        )
 
         obs: np.ndarray = flatten_obs(env.reset(seed=args.seed)[0])
         episode_return: float = 0.0
@@ -527,8 +534,13 @@ def train_dqn(args: Namespace, console: Console) -> None:
                     for name, value in metrics._asdict().items():
                         writer.add_scalar(f"woca/{name}", value, step)
 
+            if renderer is not None:
+                renderer.publish_if_due(step, trainer.robust_q_state_dict)
+
     if args.save:
         torch.save(trainer.robust_q_state_dict(), args.save)
+    if renderer is not None:
+        renderer.close()
     writer.close()
     env.close()
 
@@ -539,11 +551,7 @@ def _build_trainer(
     input_dim: int = obs_dim + n_agents
     vanilla_q: nn.Module = mlp(input_dim, n_actions, args.hidden, out_gain=1.0).to(device)
     worst_attack_q: nn.Module = mlp(input_dim, n_actions, args.hidden, out_gain=1.0).to(device)
-    robust_q: BoundedModule = BoundedModule(
-        mlp(input_dim, n_actions, args.hidden, out_gain=1.0).to(device),
-        torch.zeros(1, input_dim, device=device),
-        device=device.type,
-    )
+    robust_q: BoundedModule = _build_robust_q(input_dim, n_actions, args.hidden, device)
     # Perturb the observation part, never the one-hot agent id.
     perturbation_scale: Tensor = torch.cat(
         [torch.ones(obs_dim), torch.zeros(n_agents)]
@@ -572,6 +580,13 @@ def _build_trainer(
         perturbation_scale=perturbation_scale,
     )
     return WocaRDQNTrainer(vanilla_q, robust_q, worst_attack_q, config)
+
+def _build_robust_q(input_dim: int, n_actions: int, hidden: int, device: torch.device) -> BoundedModule:
+    return BoundedModule(
+        mlp(input_dim, n_actions, hidden, out_gain=1.0).to(device),
+        torch.zeros(1, input_dim, device=device),
+        device=device.type,
+    )
 
 
 def _select_actions(trainer: WocaRDQNTrainer, actor_obs: Tensor, exploration_probability: float) -> list[int]:
@@ -621,3 +636,41 @@ class ReplayBuffer:
             next_states=self._next_states[indices],
             terminated=self._terminated[indices],
         )
+
+
+class DqnPlayer(PolicyPlayer):
+    """Plays the greedy Q_r policy in the multi-agent highway env."""
+
+    def __init__(self, n_agents: int, obs_dim: int, n_actions: int, hidden: int) -> None:
+        self._n_agents: int = n_agents
+        self._device: torch.device = torch.device("cpu")
+        self._env = make_env(n_agents, render_mode="human")  # needs the make_env change
+        self._policy: BoundedModule = _build_robust_q(
+            obs_dim + n_agents, n_actions, hidden, self._device
+        )
+        self._policy.eval()
+        self._obs: np.ndarray | None = None
+
+    def load_weights(self, weights: Weights) -> None:
+        self._policy.load_state_dict(weights)
+
+    def start_episode(self) -> None:
+        self._obs = flatten_obs(self._env.reset()[0])
+
+    def step(self) -> bool:
+        if self._obs is None:
+            raise RuntimeError("start_episode must be called before step")
+        actions: list[int] = self._greedy_actions(self._obs)
+        next_obs, _reward, terminated, truncated, _info = self._env.step(tuple(actions))
+        self._env.render()
+        self._obs = flatten_obs(next_obs)
+        return terminated or truncated
+
+    def close(self) -> None:
+        self._env.close()
+
+    @torch.no_grad()
+    def _greedy_actions(self, obs: np.ndarray) -> list[int]:
+        actor_obs: Tensor = _to_tensor(build_actor_obs(obs, self._n_agents), self._device)
+        q_values: Tensor = self._policy(actor_obs)  # [n_agents, n_actions]
+        return [int(action) for action in q_values.argmax(dim=1)]
