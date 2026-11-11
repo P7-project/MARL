@@ -191,6 +191,13 @@ class WocaRDQNTrainer:
     def robust_q_state_dict(self) -> dict[str, Tensor]:
         return self._robust_q.state_dict()
 
+    def load_robust_q_state_dict(self, state_dict: dict[str, Tensor]) -> None:
+        # Load the previously trained weights into the robust Q-network.
+        self._robust_q.load_state_dict(state_dict)
+
+        # Set the network to evaluation mode (no training updates).
+        self._robust_q.eval()
+
     # ----------------------------------------------------------------- Q_v ---
 
     def _update_vanilla_q(self, batch: Batch) -> float:
