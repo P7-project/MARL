@@ -89,9 +89,23 @@ class TeamHighwayEnv(HighwayEnv):
 
 gym.register(id="team-highway-v0", entry_point=TeamHighwayEnv)
 
+def make_env(n_agents: int = 3, render_mode=None, name: str = "highway",) -> gym.Env:
+    if name == "intersection":
+        return make_intersection_env(n_agents, render_mode)
+    if name == "highway":
+        return make_highway_env(n_agents, render_mode)
+    raise ValueError(f"Unknown environment: {name}")
 
-def make_env(n_agents: int = 3, render_mode=None) -> gym.Env:
-    """Create the project's multi-agent highway environment."""
+
+def make_intersection_env(n_agents: int = 3, render_mode=None) -> gym.Env:
+    return gym.make(
+        "intersection-multi-agent-v2",
+        config={"controlled_vehicles": n_agents},
+        render_mode=render_mode,
+    )
+
+
+def make_highway_env(n_agents: int = 3, render_mode=None) -> gym.Env:
     config = {
         "controlled_vehicles": n_agents,
         "observation": {

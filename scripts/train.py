@@ -73,6 +73,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     # WocaR-DQN (read by train_dqn / dqn_update_wocar)
         # WocaR-DQN only (read by train_dqn)
+    parser.add_argument(
+        "--dqn-env",
+        choices=["highway", "intersection"],
+        default="highway",
+        help="Environment for WocaR-DQN",
+    )
     parser.add_argument("--hidden", type=int, default=64)  # width of the three Q-networks
     parser.add_argument("--tau", type=float, default=0.005)  # soft-update coefficient for Q_v'
     parser.add_argument("--lr", type=float, default=1e-4)  # learning rate for Q_v, Q_phi and Q_r
