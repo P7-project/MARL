@@ -39,15 +39,11 @@ uv run scripts/train.py --update-function wocar_dqn --total-steps 200000 --save 
 uv run scripts/train.py --update-function wocar_ppo --env-id Hopper-v5 --total-steps 2000000 --save woca_ppo.pt
 ```
 
-`--render` shows the current policy in a separate window while training. It is supported by `wocar_dqn` only.
-
 ## Evaluate
 
 ```bash
 uv run scripts/evaluate.py --eval ABC.pt --render
 ```
-
-Works for checkpoints from all three modes. Without `--render` it only prints episode statistics.
 
 ## Tests
 
@@ -63,6 +59,6 @@ To view training curves, run the following command in a separate terminal:
 uv run tensorboard --logdir runs
 ```
 
-TensorBoard is served at http://localhost:6006/.
+TensorBoard is served at <http://localhost:6006/>.
 
-Each training run is saved in its own subfolder of `runs/` (named by timestamp, or by `--run-name`), so runs can be compared side by side. Logged metrics are episode return, losses and, for `mappo`, crash rate and policy entropy. WocaR runs also log `woca/epsilon` and `woca/kappa_wst`.
+Logged metrics: episode return, crash rate, actor/critic loss, and policy entropy. Each training run is saved in its own subfolder of `runs/` (named by timestamp, or by `--run-name`), so runs can be compared side by side.

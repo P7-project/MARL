@@ -115,32 +115,15 @@ With 3 agents, updates begin well before ε starts ramping.
 
 `--total-steps` must be greater than `--warmup`. Otherwise the ε ramp length is zero or negative and construction fails with `ramp_steps must be positive`.
 
-## Rendering
-
-`--render`, `--render-fps`, `--render-publish-every` and `--render-refresh-seconds` are implemented for `wocar_dqn` only. `--render` with `mappo` or `wocar_ppo` exits with an error.
-
 ## Outputs
 
-- Checkpoint at `--save`, a dict with an `algorithm` key (`mappo`, `wocar_ppo` or `wocar_dqn`) plus what `scripts/evaluate.py` needs to rebuild the policy:
-  - `mappo`: `actor`, `critic`, `n_agents`, `obs_dim`, `n_actions`.
-  - `wocar_ppo`: `actor`, `critic`, `env_id`, `obs_dim`, `action_dim`.
-  - `wocar_dqn`: `robust_q` (the acting network), `n_agents`, `obs_dim`, `n_actions`, `hidden`.
+- Checkpoint at `--save`. `mappo` and `wocar_ppo` save actor and critic state dicts. `wocar_dqn` saves the `Q_r` state dict, which is the acting network.
 - TensorBoard logs in `<logdir>/<run-name>`: `episode/return`, losses, and for WocaR runs `woca/epsilon` and `woca/kappa_wst`.
 
 ```bash
 tensorboard --logdir runs
 ```
 
-## Evaluating a checkpoint
-
-```bash
-python scripts/evaluate.py --eval woca_dqn.pt --render
-```
-
-`evaluate.py` reads the `algorithm` key and evaluates any of the three modes. For the multi-agent modes it opens one window per controlled car (at most 12), each following its own car. Without `--render` it only prints episode statistics.
-
 ## Sanity check
 
-For `wocar_ppo`, `--eps-final 0` and `--kappa-wst-final 0` should reproduce plain PPO. If the learning curves differ, the bug is in the integration, not in the method.
-
-`wocar_dqn` has no equivalent check yet: it ignores `--kappa-wst-final` (the final value is fixed at 0.5 in code), and `kappa_wst = 0` does not reduce the `Q_r` target to plain DQN with the current weighting.
+With `--eps-final 0` and `--kappa-wst-final 0`, the WocaR path should behave like the plain baseline (plain PPO for `wocar_ppo`, plain independent DQN for `wocar_dqn`). If the learning curves differ, the bug is in the integration, not in the method.

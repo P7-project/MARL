@@ -27,10 +27,7 @@ class UpdateFunction(Enum):
 def main() -> None:
     parser: argparse.ArgumentParser = build_parser()
     args: argparse.Namespace = parser.parse_args()
-
-    if args.render and args.update_function != UpdateFunction.wocar_dqn.value:
-        parser.error("--render is only supported by --update-function wocar_dqn")
-
+    
     if args.update_function == UpdateFunction.wocar_ppo.value:
         train_ppo(args)
     elif args.update_function == UpdateFunction.wocar_dqn.value:

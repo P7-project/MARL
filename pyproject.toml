@@ -27,4 +27,4 @@ auto-lirpa = { git = "https://github.com/Verified-Intelligence/auto_LiRPA" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["."]

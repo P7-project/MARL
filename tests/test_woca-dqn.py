@@ -6,7 +6,7 @@ from torch import Tensor, nn
 
 from auto_LiRPA import BoundedModule
 
-from marl.woca_r_rl.dqn import (
+from src.marl.woca_r_rl.dqn import (
     Batch,
     QValueBounds,
     RampSchedule,
