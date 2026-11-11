@@ -1,5 +1,7 @@
 """Trainer-independent policy rendering in a separate process."""
 
+import math
+import os
 import time
 from abc import ABC, abstractmethod
 from argparse import ArgumentParser, Namespace
@@ -9,8 +11,16 @@ from typing import Callable
 import torch
 import torch.multiprocessing as mp
 from torch import Tensor
+from typing import NamedTuple
+
 
 Weights = dict[str, Tensor]
+
+
+class StepResult(NamedTuple):
+    finished: bool
+    reward: float
+    crashed: bool | None = None  # None when the env has no crash notion
 
 
 class PolicyPlayer(ABC):
@@ -26,8 +36,8 @@ class PolicyPlayer(ABC):
         """Reset the env."""
 
     @abstractmethod
-    def step(self) -> bool:
-        """Act once, render one frame, and return True when the episode is over."""
+    def step(self) -> StepResult:
+        """Act once, render one frame, and return the result."""
 
     @abstractmethod
     def close(self) -> None:
@@ -135,7 +145,8 @@ def _render_loop(
                     player.load_weights(latest)
                 last_refresh = frame_start
 
-            finished = player.step()
+            step_result = player.step()
+            finished = step_result.finished
 
             remaining: float = frame_seconds - (time.monotonic() - frame_start)
             if remaining > 0.0:
@@ -148,3 +159,38 @@ def _newest_weights(weights_queue, current: Weights | None) -> Weights | None:
         return weights_queue.get_nowait()
     except Empty:
         return current
+
+
+def evaluate_in_windows(player_factory: PlayerFactory, episodes: int, windows: int) -> None:
+    """Runs `windows` independent copies of the player, each in its own process and window."""
+    context = mp.get_context("spawn")
+    processes = [
+        context.Process(target=_evaluation_worker, args=(player_factory, index, episodes))
+        for index in range(windows)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join()
+
+
+@torch.no_grad()
+def _evaluation_worker(player_factory: PlayerFactory, index: int, episodes: int) -> None:
+    # Must be set before the env creates its window.
+    os.environ["SDL_VIDEO_WINDOW_POS"] = f"{25 + index % 3 * 625},{25 + 175 * math.floor(index / 3)}"
+    player: PolicyPlayer = player_factory()
+
+    for episode in range(episodes):
+        player.start_episode()
+        steps: int = 0
+        total_return: float = 0.0
+        result: StepResult = StepResult(finished=False, reward=0.0)
+        while not result.finished:
+            result = player.step()
+            total_return += result.reward
+            steps += 1
+        print(
+            f"(Window {index + 1}) episode {episode + 1}: "
+            f"steps={steps}, return={total_return:.2f}, crashed={result.crashed}"
+        )
+    player.close()

@@ -62,7 +62,7 @@ from ..env import build_actor_obs, flatten_obs, make_env
 
 from functools import partial
 
-from ..rendering import AsyncPolicyRenderer, PolicyPlayer, Weights, create_renderer
+from ..rendering import AsyncPolicyRenderer, PolicyPlayer, StepResult, Weights, create_renderer
 
 
 class Batch(NamedTuple):
@@ -567,8 +567,19 @@ def train_dqn(args: Namespace, console: Console) -> None:
             if renderer is not None:
                 renderer.publish_if_due(step, trainer.robust_q_state_dict)
 
-    if args.save:
-        torch.save(trainer.robust_q_state_dict(), args.save)
+        if args.save:
+            torch.save(
+                {
+                    "algorithm": "wocar_dqn",
+                    "robust_q": trainer.robust_q_state_dict(),
+                    "n_agents": n_agents,
+                    "obs_dim": obs_dim,
+                    "n_actions": n_actions,
+                    "hidden": args.hidden,
+                    "dqn_env": env_name,
+                },
+                args.save,
+            )
     if renderer is not None:
         renderer.close()
     writer.close()
@@ -694,7 +705,7 @@ class DqnPlayer(PolicyPlayer):
     def start_episode(self) -> None:
         self._obs = flatten_obs(self._env.reset()[0])
 
-    def step(self) -> bool:
+    def step(self) -> StepResult:
         if self._obs is None:
             raise RuntimeError("start_episode must be called before step")
         actions: list[int] = self._greedy_actions(self._obs)
@@ -703,7 +714,17 @@ class DqnPlayer(PolicyPlayer):
         self._obs = flatten_obs(next_obs)
         agent_terminated = np.asarray(terminated, dtype=np.bool_)
         episode_truncated = np.asarray(truncated, dtype=np.bool_)
-        return bool(agent_terminated.all()) or bool(episode_truncated.any())
+        finished: bool = bool(agent_terminated.all()) or bool(episode_truncated.any())
+        reward: float = float(np.asarray(_reward, dtype=np.float32).mean())
+        crash_value = None
+        if isinstance(_info, dict):
+            crash_value = _info.get("crashed", _info.get("agents_crashed"))
+        crashed: bool | None = (
+            None
+            if crash_value is None
+            else bool(np.asarray(crash_value, dtype=np.bool_).any())
+        )
+        return StepResult(finished=finished, reward=reward, crashed=crashed)
 
     def close(self) -> None:
         self._env.close()
@@ -713,3 +734,13 @@ class DqnPlayer(PolicyPlayer):
         actor_obs: Tensor = _to_tensor(build_actor_obs(obs, self._n_agents), self._device)
         q_values: Tensor = self._policy(actor_obs)  # [n_agents, n_actions]
         return [int(action) for action in q_values.argmax(dim=1)]
+def build_dqn_player(checkpoint: dict) -> PolicyPlayer:
+    player = DqnPlayer(
+        checkpoint["n_agents"],
+        checkpoint["obs_dim"],
+        checkpoint["n_actions"],
+        checkpoint["hidden"],
+        env_name=checkpoint.get("dqn_env", "highway"),
+    )
+    player.load_weights(checkpoint["robust_q"])
+    return player
