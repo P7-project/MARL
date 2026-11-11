@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from highway_env.envs.highway_env import HighwayEnv
 
-from src.marl.env import make_env
+from marl.env import make_env
 
 
 @pytest.fixture

@@ -127,6 +127,7 @@ def train(args):
     if args.save:
         torch.save(
             {
+                "algorithm": "mappo",
                 "actor": actor.state_dict(),
                 "critic": critic.state_dict(),
                 "n_agents": n_agents,

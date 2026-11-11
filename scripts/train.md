@@ -16,8 +16,8 @@ Replace `scripts/train.py` below with the real path of your entry script.
 # MAPPO baseline (defaults)
 python scripts/train.py --update-function mappo
 
-# WocaR-PPO on Hopper
-python scripts/train.py --update-function wocar --env-id Hopper-v4 \
+# WocaR-PPO on Hopper (mujoco is installed by `uv sync`)
+python scripts/train.py --update-function wocar_ppo --env-id Hopper-v5 \
     --total-steps 2000000 --rollout 2048 --save woca_ppo.pt \
     --eps-final 0.075 --kappa-wst-final 0.8 --kappa-reg 0.1
 
@@ -37,6 +37,7 @@ python scripts/train.py --update-function wocar_dqn --total-steps 5000 --warmup 
 | Common | yes | yes | partly (see below) |
 | PPO | yes | yes | no |
 | WocaR shared (`--eps-final`, `--kappa-reg`) | no | yes | yes |
+| Rendering (`--render*`) | error | error | yes |
 | WocaR-PPO only | no | yes | no |
 | WocaR-DQN only | no | no | yes |
 
@@ -47,7 +48,7 @@ An argument a mode does not read is accepted and ignored.
 | Argument | Default | Meaning |
 |---|---|---|
 | `--update-function` | `mappo` | Selects the mode: `mappo`, `wocar_ppo`, `wocar_dqn`. |
-| `--agents` | 3 | Number of controlled vehicles. Ignored by `wocar`. |
+| `--agents` | 3 | Number of controlled vehicles. Ignored by `wocar_ppo`. |
 | `--total-steps` | 200000 | Total environment steps. |
 | `--seed` | 0 | Seeds numpy and torch. |
 | `--gamma` | 0.99 | Discount factor. |
@@ -55,21 +56,21 @@ An argument a mode does not read is accepted and ignored.
 | `--logdir` | `runs` | TensorBoard root. Logs go to `<logdir>/<run-name>`. |
 | `--run-name` | timestamp | Sub-directory name inside `--logdir`. |
 
-## PPO (`mappo` and `wocar`)
+## PPO (`mappo` and `wocar_ppo`)
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `--rollout` | 512 | Environment steps collected per update. For `wocar` this is single-agent steps; 2048 is a more typical Mujoco value. |
+| `--rollout` | 512 | Environment steps collected per update. For `wocar_ppo` this is single-agent steps; 2048 is a more typical Mujoco value. |
 | `--epochs` | 10 | Passes over each rollout. |
 | `--minibatch` | 128 | Minibatch size. |
 | `--lr-actor` | 3e-4 | Actor learning rate. |
-| `--lr-critic` | 1e-3 | Critic learning rate. Also used for `Q_phi` in `wocar`. |
+| `--lr-critic` | 1e-3 | Critic learning rate. Also used for `Q_phi` in `wocar_ppo`. |
 | `--lam` | 0.95 | GAE lambda. |
 | `--clip` | 0.2 | PPO clip range. |
 | `--ent` | 0.01 | Entropy bonus coefficient. |
 | `--max-grad-norm` | 0.5 | Gradient clipping norm. |
 
-## WocaR shared (`wocar` and `wocar_dqn`)
+## WocaR shared (`wocar_ppo` and `wocar_dqn`)
 
 These two defaults are PPO values. For `wocar_dqn`, pass them explicitly.
 
@@ -82,7 +83,7 @@ These two defaults are PPO values. For `wocar_dqn`, pass them explicitly.
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `--env-id` | `Hopper-v4` | Gymnasium environment id (Hopper, Walker2d, HalfCheetah, Ant). |
+| `--env-id` | `Hopper-v5` | Gymnasium environment id (Hopper, Walker2d, HalfCheetah, Ant). |
 | `--kappa-wst-final` | 0.8 | Final weight of the `Q_phi` advantage shift. Paper: 0.8 on Hopper, Walker2d, HalfCheetah; 0.5 on Ant. |
 | `--kappa-wst-shape` | `linear` | Ramp shape for `kappa_wst`: `linear` or `exponential`. Paper uses exponential only on Ant. |
 
@@ -114,15 +115,32 @@ With 3 agents, updates begin well before ε starts ramping.
 
 `--total-steps` must be greater than `--warmup`. Otherwise the ε ramp length is zero or negative and construction fails with `ramp_steps must be positive`.
 
+## Rendering
+
+`--render`, `--render-fps`, `--render-publish-every` and `--render-refresh-seconds` are implemented for `wocar_dqn` only. `--render` with `mappo` or `wocar_ppo` exits with an error.
+
 ## Outputs
 
-- Checkpoint at `--save`. `mappo` and `wocar_ppo` save actor and critic state dicts. `wocar_dqn` saves the `Q_r` state dict, which is the acting network.
+- Checkpoint at `--save`, a dict with an `algorithm` key (`mappo`, `wocar_ppo` or `wocar_dqn`) plus what `scripts/evaluate.py` needs to rebuild the policy:
+  - `mappo`: `actor`, `critic`, `n_agents`, `obs_dim`, `n_actions`.
+  - `wocar_ppo`: `actor`, `critic`, `env_id`, `obs_dim`, `action_dim`.
+  - `wocar_dqn`: `robust_q` (the acting network), `n_agents`, `obs_dim`, `n_actions`, `hidden`.
 - TensorBoard logs in `<logdir>/<run-name>`: `episode/return`, losses, and for WocaR runs `woca/epsilon` and `woca/kappa_wst`.
 
 ```bash
 tensorboard --logdir runs
 ```
 
+## Evaluating a checkpoint
+
+```bash
+python scripts/evaluate.py --eval woca_dqn.pt --render
+```
+
+`evaluate.py` reads the `algorithm` key and evaluates any of the three modes. For the multi-agent modes it opens one window per controlled car (at most 12), each following its own car. Without `--render` it only prints episode statistics.
+
 ## Sanity check
 
-With `--eps-final 0` and `--kappa-wst-final 0`, the WocaR path should behave like the plain baseline (plain PPO for `wocar_ppo`, plain independent DQN for `wocar_dqn`). If the learning curves differ, the bug is in the integration, not in the method.
+For `wocar_ppo`, `--eps-final 0` and `--kappa-wst-final 0` should reproduce plain PPO. If the learning curves differ, the bug is in the integration, not in the method.
+
+`wocar_dqn` has no equivalent check yet: it ignores `--kappa-wst-final` (the final value is fixed at 0.5 in code), and `kappa_wst = 0` does not reduce the `Q_r` target to plain DQN with the current weighting.

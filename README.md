@@ -1,10 +1,18 @@
-# MAPPO (Multi-Agent PPO) for multi-agent highway-env
+# Multi-agent highway-env: MAPPO and WocaR-RL baselines
 
-## Design
+Three training modes share one entry point (`scripts/train.py`, selected with `--update-function`). All arguments are documented in [`scripts/train.md`](scripts/train.md).
+
+| Mode | Algorithm | Environment |
+|---|---|---|
+| `mappo` (default) | MAPPO | multi-agent highway, discrete actions |
+| `wocar_dqn` | WocaR-DQN | multi-agent highway, discrete actions |
+| `wocar_ppo` | WocaR-PPO | single-agent MuJoCo, continuous actions |
+
+## MAPPO design
 
 - **Parameter-shared actor:** one policy network used by all agents. A one-hot agent ID is appended to each agent's observation so they can specialise.
 - **Centralised critic:** V(s) takes the concatenation of all agents' observations.
-- **Team reward:** the code assumes highway-env returns one shared scalar reward, so GAE is computed at team level and the same advantage is used for every agent's policy loss.
+- **Team reward:** `TeamHighwayEnv` (`src/marl/env.py`) averages the per-vehicle highway-env reward over all controlled vehicles and ends the episode when any vehicle crashes. GAE is computed at team level and the same advantage is used for every agent's policy loss.
 
 ## Install
 
@@ -24,11 +32,22 @@ Each iteration collects `--rollout` steps (default 512) before updating, so `--t
 uv run scripts/train.py --total-steps 2000 --rollout 256 --save test.pt
 ```
 
+Other modes:
+
+```bash
+uv run scripts/train.py --update-function wocar_dqn --total-steps 200000 --save woca_dqn.pt
+uv run scripts/train.py --update-function wocar_ppo --env-id Hopper-v5 --total-steps 2000000 --save woca_ppo.pt
+```
+
+`--render` shows the current policy in a separate window while training. It is supported by `wocar_dqn` only.
+
 ## Evaluate
 
 ```bash
 uv run scripts/evaluate.py --eval ABC.pt --render
 ```
+
+Works for checkpoints from all three modes. Without `--render` it only prints episode statistics.
 
 ## Tests
 
@@ -46,4 +65,4 @@ uv run tensorboard --logdir runs
 
 TensorBoard is served at http://localhost:6006/.
 
-Logged metrics: episode return, crash rate, actor/critic loss, and policy entropy. Each training run is saved in its own subfolder of `runs/` (named by timestamp, or by `--run-name`), so runs can be compared side by side.
+Each training run is saved in its own subfolder of `runs/` (named by timestamp, or by `--run-name`), so runs can be compared side by side. Logged metrics are episode return, losses and, for `mappo`, crash rate and policy entropy. WocaR runs also log `woca/epsilon` and `woca/kappa_wst`.

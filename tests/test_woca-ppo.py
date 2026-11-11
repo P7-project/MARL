@@ -4,7 +4,7 @@ from auto_LiRPA import BoundedModule
 from torch import Tensor, nn
 
 # Adjust to the real module path of ppo.py.
-from src.marl.woca_r_rl.ppo import (
+from marl.woca_r_rl.ppo import (
     ActionBox,
     PolicyActionBounder,
     SgldRegularizer,
