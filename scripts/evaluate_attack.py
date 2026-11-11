@@ -1,3 +1,4 @@
+
 import argparse
 import numpy as np
 import torch
@@ -16,6 +17,7 @@ from marl.woca_r_rl.dqn import (
 from rich.progress import Progress
 
 from marl.experiments.random_attack import RandomObservationAttacker
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -41,8 +43,8 @@ def parse_args():
 
     # Attack configuration
     parser.add_argument("--attack-strength", type=float, default=0.05)
-    parser.add_argument("--attack-mode", choices=["single", "multiple", "random"], default="single")
-    parser.add_argument("--target-agents", type=int, nargs="+", default=[0], help="Agent indices to attack in single or multiple mode.")
+    parser.add_argument("--target-mode", choices=["fixed", "random"], default="fixed")
+    parser.add_argument("--target-agents", type=int, nargs="+", help="Agent indices to attack in fixed targeting mode.")
     parser.add_argument("--attack-interval", type=int, default=10)
     parser.add_argument("--attack-duration", type=int, default=3)
 
@@ -50,7 +52,14 @@ def parse_args():
     parser.add_argument("--logdir", type=str, default="runs")
     parser.add_argument("--run-name", type=str, default=datetime.now().strftime("%Y%m%d-%H%M%S"))
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    # Fixed targeting requires at least one target agent.
+    if args.mode == "attacked" and args.target_mode == "fixed":
+        if args.target_agents is None:
+            parser.error("--target-agents is required when using fixed targeting.")
+
+    return args
 
 
 def load_model(args, device):
@@ -87,15 +96,18 @@ def load_model(args, device):
 
 def evaluate(args, trainer, env, device):
 
-    # Create the random observation attacker
-    attacker = RandomObservationAttacker(
-        attack_strength=args.attack_strength,
-        target_agents=args.target_agents,
-        attack_mode=args.attack_mode,
-        attack_interval=args.attack_interval,
-        attack_duration=args.attack_duration,
-        seed=args.seed
-    )
+    attacker = None
+
+    if args.mode == "attacked":
+        # Create the random observation attacker
+        attacker = RandomObservationAttacker(
+            attack_strength=args.attack_strength,
+            target_agents=args.target_agents,
+            target_mode=args.target_mode,
+            attack_interval=args.attack_interval,
+            attack_duration=args.attack_duration,
+            seed=args.seed
+        )
 
     episode_rewards = []
 
@@ -118,7 +130,8 @@ def evaluate(args, trainer, env, device):
 
             obs = flatten_obs(obs)
 
-            attacker.reset()
+            if attacker is not None:
+                attacker.reset()
 
             done = False
             total_reward = 0
@@ -164,7 +177,6 @@ def main():
     args = parse_args()
 
     log_dir = Path(args.logdir) / "attack_evaluation" / args.run_name
-
     writer = SummaryWriter(log_dir=str(log_dir))
 
     device = torch.device(
@@ -180,8 +192,9 @@ def main():
     if args.mode == "clean":
         tag = "clean"
     else:
-        tag = f"attacked/{args.attack_mode}/strength_{args.attack_strength}"
+        tag = f"attacked/{args.target_mode}/strength_{args.attack_strength}"
 
+    # Log individual episode rewards to TensorBoard
     for episode, reward in enumerate(rewards):
         writer.add_scalar(
             f"{tag}/episode_reward",
@@ -191,16 +204,16 @@ def main():
 
     writer.close()
 
+    # Print evaluation summary
     print(f"Mode: {args.mode}")
-    if args.mode == "attacked":
-        print(f"Attack mode: {args.attack_mode}")
-        if args.attack_mode in ["single", "multiple"]:
-            print(f"Target agents: {args.target_agents}")
 
+    if args.mode == "attacked":
+        print(f"Target mode: {args.target_mode}")
+        if args.target_mode == "fixed":
+            print(f"Target agents: {args.target_agents}")
 
     print(f"Average reward: {mean_reward:.2f}")
     print(f"Reward standard deviation: {std_reward:.2f}")
-
 
     env.close()
 
