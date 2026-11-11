@@ -9,10 +9,10 @@ from rich.console import Console
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from .marl.rendering import add_render_arguments
-from src.marl.training.trainer import train
-from src.marl.woca_r_rl.ppo import train_ppo
-from src.marl.woca_r_rl.dqn import train_dqn
+from marl.rendering import add_render_arguments
+from marl.training.trainer import train
+from marl.woca_r_rl.ppo import train_ppo
+from marl.woca_r_rl.dqn import train_dqn
 
 DEFAULT_SAVE_STEM: str = "default_save_name"
 
