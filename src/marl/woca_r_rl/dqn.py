@@ -40,9 +40,10 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from math import exp
-from typing import Literal, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 from gymnasium import spaces
+import gymnasium
 from rich.console import Console
 import torch
 from torch import Tensor, nn
@@ -62,7 +63,7 @@ from ..env import build_actor_obs, flatten_obs, make_env
 
 from functools import partial
 
-from ..rendering import AsyncPolicyRenderer, PolicyPlayer, Weights, create_renderer
+from ..rendering import AsyncPolicyRenderer, PolicyPlayer, StepResult, Weights, create_renderer
 
 
 class Batch(NamedTuple):
@@ -537,8 +538,18 @@ def train_dqn(args: Namespace, console: Console) -> None:
             if renderer is not None:
                 renderer.publish_if_due(step, trainer.robust_q_state_dict)
 
-    if args.save:
-        torch.save(trainer.robust_q_state_dict(), args.save)
+        if args.save:
+            torch.save(
+            {
+                "algorithm": "wocar_dqn",
+                "robust_q": trainer.robust_q_state_dict(),
+                "n_agents": n_agents,
+                "obs_dim": obs_dim,
+                "n_actions": n_actions,
+                "hidden": args.hidden,
+            },
+            args.save,
+        )
     if renderer is not None:
         renderer.close()
     writer.close()
@@ -657,14 +668,20 @@ class DqnPlayer(PolicyPlayer):
     def start_episode(self) -> None:
         self._obs = flatten_obs(self._env.reset()[0])
 
-    def step(self) -> bool:
+    def step(self) -> StepResult:
         if self._obs is None:
             raise RuntimeError("start_episode must be called before step")
         actions: list[int] = self._greedy_actions(self._obs)
         next_obs, _reward, terminated, truncated, _info = self._env.step(tuple(actions))
         self._env.render()
         self._obs = flatten_obs(next_obs)
-        return terminated or truncated
+        crashed: bool = self.any_vehicle_crashed(self._env)
+
+        return StepResult(finished=terminated or truncated, reward=float(_reward), crashed=crashed)
+
+    def any_vehicle_crashed(self, env: gymnasium.Env) -> bool:
+        unwrapped: Any = env.unwrapped  # highway-env specific attributes are unknown to the type checker
+        return any(vehicle.crashed for vehicle in unwrapped.controlled_vehicles)
 
     def close(self) -> None:
         self._env.close()
@@ -674,3 +691,11 @@ class DqnPlayer(PolicyPlayer):
         actor_obs: Tensor = _to_tensor(build_actor_obs(obs, self._n_agents), self._device)
         q_values: Tensor = self._policy(actor_obs)  # [n_agents, n_actions]
         return [int(action) for action in q_values.argmax(dim=1)]
+
+
+def build_dqn_player(checkpoint: dict) -> PolicyPlayer:
+    player = DqnPlayer(
+        checkpoint["n_agents"], checkpoint["obs_dim"], checkpoint["n_actions"], checkpoint["hidden"]
+    )
+    player.load_weights(checkpoint["robust_q"])
+    return player

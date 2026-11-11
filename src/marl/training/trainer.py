@@ -11,6 +11,9 @@ from torch.utils.tensorboard import SummaryWriter
 from ..env import build_actor_obs, flatten_obs, make_env
 from ..mappo import ppo_update
 from ..models import Actor, Critic
+from functools import partial
+
+from ..rendering import AsyncPolicyRenderer, PolicyPlayer, StepResult, Weights, create_renderer
 
 
 console = Console()
@@ -32,6 +35,10 @@ def train(args):
         critic = Critic(obs_dim * n_agents).to(device)
         opt_actor = torch.optim.Adam(actor.parameters(), lr=args.lr_actor, eps=1e-5)
         opt_critic = torch.optim.Adam(critic.parameters(), lr=args.lr_critic, eps=1e-5)
+
+        renderer: AsyncPolicyRenderer | None = create_renderer(
+            args, partial(MappoPlayer, n_agents, obs_dim, n_actions)
+        )
 
         obs, _ = env.reset(seed=args.seed)
         obs = flatten_obs(obs)
@@ -88,6 +95,7 @@ def train(args):
 
                     episode_return += reward
                     steps_done += 1
+                    
 
                     if done:
                         finished_returns.append(episode_return)
@@ -108,6 +116,9 @@ def train(args):
                 actor, critic, opt_actor, opt_critic, buf, last_value, args, device
             )
 
+            if renderer is not None:
+                renderer.publish_if_due(steps_done, actor.state_dict)
+
             iteration += 1
             recent_returns = finished_returns[-10:]
             mean_return = float(np.mean(recent_returns)) if recent_returns else float("nan")
@@ -127,6 +138,7 @@ def train(args):
     if args.save:
         torch.save(
             {
+                "algorithm": "mappo",
                 "actor": actor.state_dict(),
                 "critic": critic.state_dict(),
                 "n_agents": n_agents,
@@ -137,5 +149,53 @@ def train(args):
         )
         console.print(f"Saved checkpoint to {args.save}")
 
+    if renderer is not None:
+        renderer.close()
     writer.close()
     env.close()
+
+
+class MappoPlayer(PolicyPlayer):
+    """Plays the shared categorical actor greedily in the multi-agent highway env."""
+
+    def __init__(self, n_agents: int, obs_dim: int, n_actions: int) -> None:
+        self._n_agents: int = n_agents
+        self._env = make_env(n_agents, render_mode="human")  # needs the make_env change
+        self._actor: Actor = Actor(obs_dim + n_agents, n_actions)
+        self._actor.eval()
+        self._obs: np.ndarray | None = None
+
+    def load_weights(self, weights: Weights) -> None:
+        self._actor.load_state_dict(weights)
+
+    def start_episode(self) -> None:
+        self._obs = flatten_obs(self._env.reset()[0])
+
+    def step(self) -> StepResult:
+        if self._obs is None:
+            raise RuntimeError("start_episode must be called before step")
+        actions: tuple[int, ...] = self._greedy_actions(self._obs)
+        next_obs, _reward, terminated, truncated, _info = self._env.step(actions)
+        self._env.render()  # remove if make_env's human mode already draws inside step
+        self._obs = flatten_obs(next_obs)
+        crashed: bool = any(
+            vehicle.crashed for vehicle in self._env.unwrapped.controlled_vehicles
+        )
+        return StepResult(finished=terminated or truncated, reward=float(_reward), crashed=crashed)
+
+    def close(self) -> None:
+        self._env.close()
+
+    @torch.no_grad()
+    def _greedy_actions(self, obs: np.ndarray) -> tuple[int, ...]:
+        actor_obs: torch.Tensor = torch.as_tensor(
+            build_actor_obs(obs, self._n_agents), dtype=torch.float32
+        )
+        logits: torch.Tensor = self._actor.dist(actor_obs).logits  # [n_agents, n_actions]
+        return tuple(int(action) for action in logits.argmax(dim=1))
+
+
+def build_mappo_player(checkpoint: dict) -> PolicyPlayer:
+    player = MappoPlayer(checkpoint["n_agents"], checkpoint["obs_dim"], checkpoint["n_actions"])
+    player.load_weights(checkpoint["actor"])
+    return player
