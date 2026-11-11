@@ -43,6 +43,10 @@ from typing import Literal
 import gymnasium as gym
 from torch.utils.tensorboard import SummaryWriter
 
+from functools import partial
+
+from ..rendering import AsyncPolicyRenderer, PolicyPlayer, StepResult, Weights, create_renderer
+
 from ..mappo import compute_gae
 from ..models import GaussianActor, mlp, Critic
 
@@ -386,7 +390,12 @@ def train_ppo(args: Namespace) -> None:
             writer.add_scalar("episode/mean_return_last10", mean_return, steps_done)
 
     if args.save:
-        torch.save({"actor": actor.state_dict(), "critic": critic.state_dict()}, args.save)
+        torch.save(
+            {
+                "algorithm": "wocar_ppo",
+                "actor": actor.state_dict(), 
+                "critic": critic.state_dict(),
+            }, args.save)
 
     writer.close()
     env.close()
@@ -488,3 +497,40 @@ class RampSchedule:
             return self.final_value * progress
         normalizer: float = exp(self.growth) - 1.0
         return self.final_value * (exp(self.growth * progress) - 1.0) / normalizer
+
+class PpoPlayer(PolicyPlayer):
+    def __init__(self, env_id: str, obs_dim: int, action_dim: int) -> None:
+        self._device: torch.device = torch.device("cpu")
+        self._env = gym.make(env_id, render_mode="human")
+        self._actor: GaussianActor = GaussianActor(obs_dim, action_dim, self._device)
+        self._obs: np.ndarray | None = None
+
+    def load_weights(self, weights: Weights) -> None:
+        self._actor.load_state_dict(weights)
+
+    def start_episode(self) -> None:
+        self._obs = self._env.reset()[0].astype(np.float32)
+
+    def step(self) -> StepResult:
+        if self._obs is None:
+            raise RuntimeError("start_episode must be called before step")
+
+        assert isinstance(self._env.action_space, spaces.Box)
+
+        with torch.no_grad():
+            mean: Tensor = self._actor.mean_network(_to_batch(self._obs, self._device))  # deterministic action
+        action: np.ndarray = np.clip(
+            mean.squeeze(0).numpy(), self._env.action_space.low, self._env.action_space.high
+        )
+        next_obs, _reward, terminated, truncated, _info = self._env.step(action)
+        self._obs = next_obs.astype(np.float32)
+        return StepResult(finished=terminated or truncated, reward=float(_reward))
+
+    def close(self) -> None:
+        self._env.close()
+
+
+def build_ppo_player(checkpoint: dict) -> PolicyPlayer:
+    player = PpoPlayer(checkpoint["env_id"], checkpoint["obs_dim"], checkpoint["action_dim"])
+    player.load_weights(checkpoint["actor"])
+    return player
