@@ -37,7 +37,6 @@ python scripts/train.py --update-function wocar_dqn --total-steps 5000 --warmup 
 | Common | yes | yes | partly (see below) |
 | PPO | yes | yes | no |
 | WocaR shared (`--eps-final`, `--kappa-reg`) | no | yes | yes |
-| Rendering (`--render*`) | error | error | yes |
 | WocaR-PPO only | no | yes | no |
 | WocaR-DQN only | no | no | yes |
 
