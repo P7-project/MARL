@@ -39,9 +39,11 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import NamedTuple
+from math import exp
+from typing import Any, Literal, NamedTuple
 
 from gymnasium import spaces
+import gymnasium
 from rich.console import Console
 import torch
 from torch import Tensor, nn
@@ -51,7 +53,6 @@ from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
 
 from ..models import mlp
-from .schedule import RampSchedule
 
 from argparse import Namespace
 
@@ -62,7 +63,7 @@ from ..env import build_actor_obs, flatten_obs, make_env
 
 from functools import partial
 
-from ..rendering import AsyncPolicyRenderer, PolicyPlayer, Weights, create_renderer
+from ..rendering import AsyncPolicyRenderer, PolicyPlayer, StepResult, Weights, create_renderer
 
 
 class Batch(NamedTuple):
@@ -344,6 +345,32 @@ class WocaRDQNTrainer:
         return copy
 
 
+@dataclass(frozen=True)
+class RampSchedule:
+    """
+        0 until start_step, then ramps to final_value over ramp_steps, then stays there.
+    """
+
+    start_step: int
+    ramp_steps: int
+    final_value: float
+    shape: Literal["linear", "exponential"] = "linear"
+    growth: float = 5.0  # steepness of the exponential shape
+
+    def __post_init__(self) -> None:
+        if self.ramp_steps <= 0:
+            raise ValueError("ramp_steps must be positive")
+
+    def value(self, step: int) -> float:
+        if step <= self.start_step:
+            return 0.0
+        progress = min((step - self.start_step) / self.ramp_steps, 1.0)
+        if self.shape == "linear":
+            return self.final_value * progress
+        normalizer = exp(self.growth) - 1.0
+        return self.final_value * (exp(self.growth * progress) - 1.0) / normalizer
+
+
 class QValueBounds(NamedTuple):
     lower: Tensor  # [batch, num_actions]
     upper: Tensor  # [batch, num_actions]
@@ -511,8 +538,8 @@ def train_dqn(args: Namespace, console: Console) -> None:
             if renderer is not None:
                 renderer.publish_if_due(step, trainer.robust_q_state_dict)
 
-    if args.save:
-        torch.save(
+        if args.save:
+            torch.save(
             {
                 "algorithm": "wocar_dqn",
                 "robust_q": trainer.robust_q_state_dict(),
@@ -535,7 +562,7 @@ def _build_trainer(
     input_dim: int = obs_dim + n_agents
     vanilla_q: nn.Module = mlp(input_dim, n_actions, args.hidden, out_gain=1.0).to(device)
     worst_attack_q: nn.Module = mlp(input_dim, n_actions, args.hidden, out_gain=1.0).to(device)
-    robust_q: BoundedModule = build_robust_q(input_dim, n_actions, args.hidden, device)
+    robust_q: BoundedModule = _build_robust_q(input_dim, n_actions, args.hidden, device)
     # Perturb the observation part, never the one-hot agent id.
     perturbation_scale: Tensor = torch.cat(
         [torch.ones(obs_dim), torch.zeros(n_agents)]
@@ -565,7 +592,7 @@ def _build_trainer(
     )
     return WocaRDQNTrainer(vanilla_q, robust_q, worst_attack_q, config)
 
-def build_robust_q(input_dim: int, n_actions: int, hidden: int, device: torch.device) -> BoundedModule:
+def _build_robust_q(input_dim: int, n_actions: int, hidden: int, device: torch.device) -> BoundedModule:
     return BoundedModule(
         mlp(input_dim, n_actions, hidden, out_gain=1.0).to(device),
         torch.zeros(1, input_dim, device=device),
@@ -628,8 +655,8 @@ class DqnPlayer(PolicyPlayer):
     def __init__(self, n_agents: int, obs_dim: int, n_actions: int, hidden: int) -> None:
         self._n_agents: int = n_agents
         self._device: torch.device = torch.device("cpu")
-        self._env = make_env(n_agents, render_mode="human")
-        self._policy: BoundedModule = build_robust_q(
+        self._env = make_env(n_agents, render_mode="human")  # needs the make_env change
+        self._policy: BoundedModule = _build_robust_q(
             obs_dim + n_agents, n_actions, hidden, self._device
         )
         self._policy.eval()
@@ -641,13 +668,20 @@ class DqnPlayer(PolicyPlayer):
     def start_episode(self) -> None:
         self._obs = flatten_obs(self._env.reset()[0])
 
-    def step(self) -> bool:
+    def step(self) -> StepResult:
         if self._obs is None:
             raise RuntimeError("start_episode must be called before step")
         actions: list[int] = self._greedy_actions(self._obs)
         next_obs, _reward, terminated, truncated, _info = self._env.step(tuple(actions))
+        self._env.render()
         self._obs = flatten_obs(next_obs)
-        return terminated or truncated
+        crashed: bool = self.any_vehicle_crashed(self._env)
+
+        return StepResult(finished=terminated or truncated, reward=float(_reward), crashed=crashed)
+
+    def any_vehicle_crashed(self, env: gymnasium.Env) -> bool:
+        unwrapped: Any = env.unwrapped  # highway-env specific attributes are unknown to the type checker
+        return any(vehicle.crashed for vehicle in unwrapped.controlled_vehicles)
 
     def close(self) -> None:
         self._env.close()
@@ -657,3 +691,11 @@ class DqnPlayer(PolicyPlayer):
         actor_obs: Tensor = _to_tensor(build_actor_obs(obs, self._n_agents), self._device)
         q_values: Tensor = self._policy(actor_obs)  # [n_agents, n_actions]
         return [int(action) for action in q_values.argmax(dim=1)]
+
+
+def build_dqn_player(checkpoint: dict) -> PolicyPlayer:
+    player = DqnPlayer(
+        checkpoint["n_agents"], checkpoint["obs_dim"], checkpoint["n_actions"], checkpoint["hidden"]
+    )
+    player.load_weights(checkpoint["robust_q"])
+    return player
