@@ -1,12 +1,12 @@
 [project]
 name = "marl"
 version = "0.1.0"
-description = "Add your description here"
+description = "Multi-agent highway driving with MAPPO and WocaR-RL baselines"
 readme = "README.md"
 requires-python = "~=3.11.0"
 dependencies = [
     "auto-lirpa",
-    "gymnasium>=1.4.0",
+    "gymnasium[mujoco]>=1.4.0",
     "highway-env>=1.12.1",
     "numpy>=2.4.6",
     "rich>=15.0.0",
