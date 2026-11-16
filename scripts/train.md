@@ -16,8 +16,8 @@ Run commands from the repository root. `uv run --locked` uses dependencies from 
 # MAPPO baseline (defaults)
 uv run --locked python scripts/train.py --update-function mappo
 
-# WocaR-PPO on Hopper
-uv run --locked python scripts/train.py --update-function wocar_ppo --env-id Hopper-v4 \
+# WocaR-PPO on Hopper (mujoco is installed by `uv sync`)
+uv run --locked python scripts/train.py --update-function wocar_ppo --env-id Hopper-v5 \
     --total-steps 2000000 --rollout 2048 --save woca_ppo.pt \
     --eps-final 0.075 --kappa-wst-final 0.8 --kappa-reg 0.1
 
@@ -88,7 +88,7 @@ These two defaults are PPO values. For `wocar_dqn`, pass them explicitly.
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `--env-id` | `Hopper-v4` | Gymnasium environment id (Hopper, Walker2d, HalfCheetah, Ant). |
+| `--env-id` | `Hopper-v5` | Gymnasium environment id (Hopper, Walker2d, HalfCheetah, Ant). |
 | `--kappa-wst-final` | 0.8 | Final weight of the `Q_phi` advantage shift. Paper: 0.8 on Hopper, Walker2d, HalfCheetah; 0.5 on Ant. |
 | `--kappa-wst-shape` | `linear` | Ramp shape for `kappa_wst`: `linear` or `exponential`. Paper uses exponential only on Ant. |
 
@@ -132,4 +132,4 @@ uv run --locked tensorboard --logdir runs
 
 ## Sanity check
 
-For `wocar_ppo`, `--eps-final 0` and `--kappa-wst-final 0` should remove the WocaR terms and match the plain PPO baseline. The DQN path currently fixes the `kappa_wst` schedule to 0.5, so this check does not apply to `wocar_dqn` yet.
+For `wocar_ppo`, `--eps-final 0` and `--kappa-wst-final 0` remove the WocaR terms and should match the plain PPO baseline. This check does not apply to `wocar_dqn`: its `kappa_wst` schedule is fixed in code at a final value of 0.5, so the CLI options cannot make it equivalent to plain independent DQN.
