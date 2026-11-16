@@ -40,10 +40,9 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from math import exp
-from typing import Any, Literal, NamedTuple
+from typing import Literal, NamedTuple
 
 from gymnasium import spaces
-import gymnasium
 from rich.console import Console
 import torch
 from torch import Tensor, nn
@@ -484,7 +483,8 @@ def train_dqn(args: Namespace, console: Console) -> None:
         torch.manual_seed(args.seed)
 
         n_agents: int = args.agents
-        env = make_env(n_agents)
+        env_name: str = getattr(args, "dqn_env", "highway")
+        env = make_env(n_agents, name=env_name)
         observation_space = env.observation_space
         action_space = env.action_space
         assert isinstance(observation_space, spaces.Tuple)
@@ -502,7 +502,8 @@ def train_dqn(args: Namespace, console: Console) -> None:
         buffer: ReplayBuffer = ReplayBuffer(args.buffer_size, input_dim, device)
         writer: SummaryWriter = SummaryWriter(f"{args.logdir}/{args.run_name}")
         renderer: AsyncPolicyRenderer | None = create_renderer(
-            args, partial(DqnPlayer, n_agents, obs_dim, n_actions, args.hidden)
+            args,
+            partial(DqnPlayer, n_agents, obs_dim, n_actions, args.hidden, env_name),
         )
 
         obs: np.ndarray = flatten_obs(env.reset(seed=args.seed)[0])
@@ -515,15 +516,43 @@ def train_dqn(args: Namespace, console: Console) -> None:
             actions: list[int] = _select_actions(trainer, actor_obs, _exploration_probability(step, args))
 
             next_obs, reward, terminated, truncated, _info = env.step(tuple(actions))
+            agent_rewards: np.ndarray = np.asarray(reward, dtype=np.float32).reshape(-1)
+            if agent_rewards.size == 1:
+                agent_rewards = np.full(n_agents, agent_rewards.item(), dtype=np.float32)
+            elif agent_rewards.size != n_agents:
+                raise ValueError(
+                    f"Expected 1 or {n_agents} rewards, got {agent_rewards.size}"
+                )
+
+            agent_terminated: np.ndarray = np.asarray(terminated, dtype=np.bool_).reshape(-1)
+            if agent_terminated.size == 1:
+                agent_terminated = np.full(
+                    n_agents, agent_terminated.item(), dtype=np.bool_
+                )
+            elif agent_terminated.size != n_agents:
+                raise ValueError(
+                    f"Expected 1 or {n_agents} termination flags, "
+                    f"got {agent_terminated.size}"
+                )
+
+            episode_done: bool = bool(agent_terminated.all()) or bool(
+                np.asarray(truncated, dtype=np.bool_).any()
+            )
             next_obs = flatten_obs(next_obs)
             # Built before any reset, so it is the real next observation.
             next_actor_obs: Tensor = _to_tensor(build_actor_obs(next_obs, n_agents), device)
 
             for agent in range(n_agents):
-                buffer.add(actor_obs[agent], actions[agent], float(reward), next_actor_obs[agent], float(terminated))
+                buffer.add(
+                    actor_obs[agent],
+                    actions[agent],
+                    float(agent_rewards[agent]),
+                    next_actor_obs[agent],
+                    float(agent_terminated[agent]),
+                )
 
-            episode_return += float(reward)
-            if terminated or truncated:
+            episode_return += float(agent_rewards.mean())
+            if episode_done:
                 writer.add_scalar("episode/return", episode_return, step)
                 episode_return = 0.0
                 next_obs = flatten_obs(env.reset()[0])
@@ -540,16 +569,17 @@ def train_dqn(args: Namespace, console: Console) -> None:
 
         if args.save:
             torch.save(
-            {
-                "algorithm": "wocar_dqn",
-                "robust_q": trainer.robust_q_state_dict(),
-                "n_agents": n_agents,
-                "obs_dim": obs_dim,
-                "n_actions": n_actions,
-                "hidden": args.hidden,
-            },
-            args.save,
-        )
+                {
+                    "algorithm": "wocar_dqn",
+                    "robust_q": trainer.robust_q_state_dict(),
+                    "n_agents": n_agents,
+                    "obs_dim": obs_dim,
+                    "n_actions": n_actions,
+                    "hidden": args.hidden,
+                    "dqn_env": env_name,
+                },
+                args.save,
+            )
     if renderer is not None:
         renderer.close()
     writer.close()
@@ -650,12 +680,19 @@ class ReplayBuffer:
 
 
 class DqnPlayer(PolicyPlayer):
-    """Plays the greedy Q_r policy in the multi-agent highway env."""
+    """Plays the greedy Q_r policy in a multi-agent driving environment."""
 
-    def __init__(self, n_agents: int, obs_dim: int, n_actions: int, hidden: int) -> None:
+    def __init__(
+        self,
+        n_agents: int,
+        obs_dim: int,
+        n_actions: int,
+        hidden: int,
+        env_name: str = "highway",
+    ) -> None:
         self._n_agents: int = n_agents
         self._device: torch.device = torch.device("cpu")
-        self._env = make_env(n_agents, render_mode="human")  # needs the make_env change
+        self._env = make_env(n_agents, render_mode="human", name=env_name)
         self._policy: BoundedModule = _build_robust_q(
             obs_dim + n_agents, n_actions, hidden, self._device
         )
@@ -675,13 +712,19 @@ class DqnPlayer(PolicyPlayer):
         next_obs, _reward, terminated, truncated, _info = self._env.step(tuple(actions))
         self._env.render()
         self._obs = flatten_obs(next_obs)
-        crashed: bool = self.any_vehicle_crashed(self._env)
-
-        return StepResult(finished=terminated or truncated, reward=float(_reward), crashed=crashed)
-
-    def any_vehicle_crashed(self, env: gymnasium.Env) -> bool:
-        unwrapped: Any = env.unwrapped  # highway-env specific attributes are unknown to the type checker
-        return any(vehicle.crashed for vehicle in unwrapped.controlled_vehicles)
+        agent_terminated = np.asarray(terminated, dtype=np.bool_)
+        episode_truncated = np.asarray(truncated, dtype=np.bool_)
+        finished: bool = bool(agent_terminated.all()) or bool(episode_truncated.any())
+        reward: float = float(np.asarray(_reward, dtype=np.float32).mean())
+        crash_value = None
+        if isinstance(_info, dict):
+            crash_value = _info.get("crashed", _info.get("agents_crashed"))
+        crashed: bool | None = (
+            None
+            if crash_value is None
+            else bool(np.asarray(crash_value, dtype=np.bool_).any())
+        )
+        return StepResult(finished=finished, reward=reward, crashed=crashed)
 
     def close(self) -> None:
         self._env.close()
@@ -691,11 +734,13 @@ class DqnPlayer(PolicyPlayer):
         actor_obs: Tensor = _to_tensor(build_actor_obs(obs, self._n_agents), self._device)
         q_values: Tensor = self._policy(actor_obs)  # [n_agents, n_actions]
         return [int(action) for action in q_values.argmax(dim=1)]
-
-
 def build_dqn_player(checkpoint: dict) -> PolicyPlayer:
     player = DqnPlayer(
-        checkpoint["n_agents"], checkpoint["obs_dim"], checkpoint["n_actions"], checkpoint["hidden"]
+        checkpoint["n_agents"],
+        checkpoint["obs_dim"],
+        checkpoint["n_actions"],
+        checkpoint["hidden"],
+        env_name=checkpoint.get("dqn_env", "highway"),
     )
     player.load_weights(checkpoint["robust_q"])
     return player
