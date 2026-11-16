@@ -1,89 +1,73 @@
-
+from typing import Optional, List
 import numpy as np
+
+
+FIXED_TARGET = "fixed"
+RANDOM_TARGET = "random"
 
 
 class RandomObservationAttacker:
     """
-    Applies random perturbations to the observations received by agents
-    in a multi-agent reinforcement learning environment.
-
-    The attacker modifies agents' observations before they are passed
-    to their policies. It does not directly modify the environment state.
+    Applies random, bounded perturbations to agent observations
+    without modifying the environment state.
 
     Targeting modes:
     - "fixed": Attacks the agents specified in target_agents.
-    - "random": Randomly selects a non-empty group of agents to attack.
+    - "random": Randomly selects a non-empty group of agents.
 
     Attack parameters:
-    - attack_strength: Controls the maximum magnitude of the random
-      noise added to observations.
-    - target_agents: Specifies which agents are attacked in fixed mode.
-      For example, [0] attacks Agent 0, while [0, 2] attacks Agents 0 and 2.
-    - target_mode: Determines how target agents are selected.
-      Can be "fixed" or "random".
-    - attack_interval: Defines the number of environment steps
-      between the starts of consecutive attack cycles.
-    - attack_duration: Defines how many consecutive environment
-      steps the attack remains active during each attack cycle.
-    - seed: Optional random seed used to make agent selection and
-      noise generation reproducible.
+    - epsilon: Maximum magnitude of observation noise (perturbation budget).
+    - attack_probability: Probability of attacking at each timestep.
+    - target_agents: Agents to attack in fixed mode.
+    - target_mode: "fixed" or "random".
+    - seed: Optional seed for reproducible random selection and noise.
     """
 
     def __init__(
         self,
-        attack_strength=0.05,
-        target_agents=None,
-        target_mode="fixed",
-        attack_interval=10,
-        attack_duration=3,
-        seed=None
-    ):
-        self.attack_strength = attack_strength
+        epsilon: float =0.05,
+        attack_probability: float = 1.0,
+        target_agents:  Optional[List[int]] =None,
+        target_mode: str = FIXED_TARGET,
+        seed: Optional[int] = None
+    ) -> None:
+        
+        self.epsilon = epsilon
+        self.attack_probability = attack_probability
         self.target_agents = target_agents
         self.target_mode = target_mode
-        self.attack_interval = attack_interval
-        self.attack_duration = attack_duration
-
+  
         # Dedicated random number generator.
         self.rng = np.random.default_rng(seed)
 
-        # Keep track of the current environment step and selected targets.
-        self.current_step = 0
-        self.selected_agents = None
+
 
         # Validate the attack configuration.
-        if self.target_mode not in ["fixed", "random"]:
+        if self.target_mode not in [FIXED_TARGET, RANDOM_TARGET]:
             raise ValueError(
                 "target_mode must be 'fixed' or 'random'."
             )
 
-        if self.attack_strength < 0:
+        if self.epsilon < 0:
             raise ValueError("Attack strength cannot be negative.")
 
-        if self.attack_interval <= 0 or self.attack_duration <= 0:
-            raise ValueError("Attack interval and duration must be positive.")
-
-        if self.attack_duration > self.attack_interval:
-            raise ValueError(
-                "Attack duration cannot exceed attack interval."
-            )
-
+        if not 0.0 <= self.attack_probability <= 1.0:
+            raise ValueError("Attack probability must be between 0 and 1.")
+        
         # Fixed targeting requires a list of target agents.
-        if self.target_mode == "fixed":
+        if self.target_mode == FIXED_TARGET:
             if self.target_agents is None or len(self.target_agents) == 0:
                 raise ValueError(
                     "target_agents must be provided for fixed targeting."
                 )
 
-    def reset(self):
-        """Reset the attack schedule at the beginning of an episode."""
-        self.current_step = 0
-        self.selected_agents = None
 
-    def _select_agents(self, n_agents):
+
+    def _select_agents(self, n_agents) -> List[int]:
         """Select the agents to attack based on the configured mode."""
 
-        if self.target_mode == "fixed":
+        if self.target_mode == FIXED_TARGET:
+            assert self.target_agents is not None
             agents = list(self.target_agents)
 
         else:
@@ -105,9 +89,9 @@ class RandomObservationAttacker:
 
         return agents
 
-    def attack(self, observations):
+    def attack(self, observations) -> np.ndarray:
         """
-        Apply random noise to selected agents at scheduled attack steps.
+          Apply random noise to selected agents with a given probability.
 
         observations: Array with shape (n_agents, obs_dim).
         """
@@ -115,30 +99,25 @@ class RandomObservationAttacker:
         # Create a copy so the original observations remain unchanged.
         attacked_observations = observations.copy()
 
+        # Decide whether an attack happens at this timestep.
+        if self.rng.random() >= self.attack_probability:
+            return attacked_observations
+
         n_agents = observations.shape[0]
 
-        # Check whether an attack should be active at this timestep.
-        attack_active = (
-            self.current_step % self.attack_interval
-            < self.attack_duration
-        )
 
-        if attack_active:
+        # Select agents to attack at this timestep.
+        selected_agents = self._select_agents(n_agents)
 
-            # Select targets at the beginning of each attack cycle.
-            if self.current_step % self.attack_interval == 0:
-                self.selected_agents = self._select_agents(n_agents)
+        # Apply noise to each selected agent.
+        for agent in selected_agents:
+            noise = self.rng.uniform(
+                -self.epsilon,
+                self.epsilon,
+                size=attacked_observations[agent].shape
+            )
 
-            # Apply noise to each selected agent.
-            for agent in self.selected_agents:
-                noise = self.rng.uniform(
-                    -self.attack_strength,
-                    self.attack_strength,
-                    size=attacked_observations[agent].shape
-                )
+            attacked_observations[agent] += noise
 
-                attacked_observations[agent] += noise
-
-        self.current_step += 1
 
         return attacked_observations
