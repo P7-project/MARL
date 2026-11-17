@@ -126,6 +126,8 @@ class WocaRDQNTrainer:
         self._worst_attack_q = worst_attack_q
         self._config = config
         self._update_count: int = 0
+        self._last_worst_attack_loss: float = float("nan")
+        self._last_mean_reachable: float = float("nan")
         self._bounder = RobustQBounder(
             robust_q,
             config.observation_low,
@@ -222,14 +224,16 @@ class WocaRDQNTrainer:
 
     def _maybe_update_worst_attack_critic(self, batch: Batch, epsilon: float) -> tuple[float, float]:
         if self._update_count % self._config.worst_update_every != 0:
-            return float("nan"), float("nan")
+            return self._last_worst_attack_loss, self._last_mean_reachable
         reachable_epsilon = self._config.reachable_epsilon
         radius = epsilon if reachable_epsilon is None else reachable_epsilon
         targets, reachable = self._worst_attack_targets(batch, radius)
         predictions = self._gather(self._worst_attack_q(batch.states), batch.actions)
         loss = self._td_loss(predictions, targets)
         self._step(self._worst_attack_optimizer, loss)
-        return float(loss.detach()), float(reachable.float().sum(dim=1).mean())
+        self._last_worst_attack_loss = float(loss.detach())
+        self._last_mean_reachable = float(reachable.float().sum(dim=1).mean())
+        return self._last_worst_attack_loss, self._last_mean_reachable
 
     # ------------------------------------------------------------- target ---
 
@@ -461,7 +465,7 @@ class SARegularizer:
 
 def train_dqn(args: Namespace, console: Console) -> None:
     with console.status("[bold green]Setting up WocaR-DQN..."):
-        if args.total_steps < args.warmup:
+        if args.total_steps <= args.warmup:
             raise ValueError(f"--total_steps ({args.total_steps}) must be >= --warmup ({args.warmup})")
 
         device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

@@ -89,14 +89,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--worst-kappa-final", type=float, default=0.1)  # TD weight ramps 1 -> this
     parser.add_argument("--reachable-eps", type=float, default=1e-7)  # official radius for the reachable-action set
     parser.add_argument("--reachable-eps-scheduled", action="store_true")  # use the scheduled eps instead (paper description)    parser.add_argument("--lr", type=float, default=1e-4)  # learning rate for Q_v, Q_phi and Q_r
-    parser.add_argument("--adam-eps", type=float, default=1.5e-4)
-    parser.add_argument("--regularizer-margin", type=float, default=1.0)  # hinge c
     parser.add_argument("--mse-loss", action="store_true")  # MSE instead of Huber
     parser.add_argument("--buffer-size", type=int, default=100_000)  # replay buffer capacity, in transitions (one per agent per env step)
     parser.add_argument("--warmup", type=int, default=5_000)  # transitions in the buffer before updates start; also when eps_t starts ramping
     parser.add_argument("--batch-size", type=int, default=64)  # minibatch size per update
     parser.add_argument("--explore-steps", type=int, default=50_000)  # env steps over which the exploration probability decays
     parser.add_argument("--explore-final", type=float, default=0.05)  # final epsilon-greedy exploration probability
+    parser.add_argument("--lr", type=float, default=1e-4) 
     return parser
 
 
