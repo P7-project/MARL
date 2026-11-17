@@ -11,6 +11,7 @@
     + Q_r loss: worst_kappa * TD + (1 - worst_kappa) * worst_case_loss + kappa_reg * L_reg.
     + Every worst_rate-th update: A_adv_hat(s') from IBP bounds of Q_r; y = r + gamma * min over A_adv_hat of Q_phi(s', a'); Huber regression of Q_phi.
     + Every target_update_every updates: copy Q_r into Q_r'.
+
     Math                                         Code
     (T_worst^pi Q)(s, a)                         _worst_attack_targets
     E_{s' ~ P(s, a)}                             replay-buffer sample next_states
@@ -22,7 +23,6 @@
     Q (worst-attack critic)                      worst_attack_q
     pi = argmax_a Q_r(s, a)                      robust_q
     eps_t, kappa_wst(t)                          RampSchedule
-    w(s)                                         _state_importance
     L_reg                                        SARegularizer
 """
 
@@ -449,7 +449,7 @@ class SARegularizer:
     """
         SA-DQN regularizer on Q_r.
 
-        Math: L_reg(s) = max{ max_{a != a*} Q_u(s, a) - Q_l(s, a*), -c },  a* = argmax_a Q_r(s, a).
+        Math: L_reg(s) = max{ -min_{a != a*} LB[Q(a*) - Q(a)], -c },  a* = argmax_a Q_r(s, a).
         Zero gradient once the clean action is certified to stay best by margin c.
     """
 
