@@ -6,28 +6,34 @@ One entry point, three training modes selected by `--update-function`.
 |---|---|---|---|
 | `mappo` | MAPPO baseline | `train` | multi-agent highway, discrete actions |
 | `wocar_ppo` | WocaR-PPO (Algorithm 1) | `train_ppo` | single-agent Mujoco, continuous actions |
-| `wocar_dqn` | WocaR-DQN (Algorithm 2) | `train_dqn` | multi-agent highway, discrete actions |
+| `wocar_dqn` | WocaR-DQN (Algorithm 2) | `train_dqn` | multi-agent highway or intersection, discrete actions |
 
-Replace `scripts/train.py` below with the real path of your entry script.
+Run commands from the repository root. `uv run --locked` uses dependencies from `uv.lock`.
 
 ## Examples
 
 ```bash
 # MAPPO baseline (defaults)
-python scripts/train.py --update-function mappo
+uv run --locked python scripts/train.py --update-function mappo
 
 # WocaR-PPO on Hopper (mujoco is installed by `uv sync`)
-python scripts/train.py --update-function wocar_ppo --env-id Hopper-v5 \
+uv run --locked python scripts/train.py --update-function wocar_ppo --env-id Hopper-v5 \
     --total-steps 2000000 --rollout 2048 --save woca_ppo.pt \
     --eps-final 0.075 --kappa-wst-final 0.8 --kappa-reg 0.1
 
 # WocaR-DQN on highway
-python scripts/train.py --update-function wocar_dqn --agents 3 \
+uv run --locked python scripts/train.py --update-function wocar_dqn --dqn-env highway --agents 3 \
     --total-steps 200000 --warmup 5000 --save woca_dqn.pt \
     --eps-final 0.01 --kappa-reg 0.01
 
-# Short smoke test for WocaR-DQN (total-steps must exceed warmup)
-python scripts/train.py --update-function wocar_dqn --total-steps 5000 --warmup 500
+# WocaR-DQN on the multi-agent intersection
+uv run --locked python scripts/train.py --update-function wocar_dqn --dqn-env intersection --agents 2 \
+    --total-steps 200000 --warmup 5000 --save woca_dqn_intersection.pt \
+    --eps-final 0.01 --kappa-reg 0.01
+
+# Rendered smoke run for WocaR-DQN on intersection (total-steps must exceed warmup)
+uv run --locked python scripts/train.py --update-function wocar_dqn --dqn-env intersection \
+    --agents 2 --total-steps 5000 --warmup 500 --render
 ```
 
 ## Which arguments each mode reads
@@ -94,6 +100,7 @@ All defaults are placeholders, not paper values.
 
 | Argument | Default | Meaning |
 |---|---|---|
+| `--dqn-env` | `highway` | Environment: `highway` or `intersection`. |
 | `--hidden` | 64 | Width of `Q_v`, `Q_phi` and `Q_r`. |
 | `--tau` | 0.005 | Soft-update coefficient for the target `Q_v'`. |
 | `--lr` | 1e-4 | Learning rate for all three Q-networks. |
@@ -120,9 +127,9 @@ With 3 agents, updates begin well before ε starts ramping.
 - TensorBoard logs in `<logdir>/<run-name>`: `episode/return`, losses, and for WocaR runs `woca/epsilon` and `woca/kappa_wst`.
 
 ```bash
-tensorboard --logdir runs
+uv run --locked tensorboard --logdir runs
 ```
 
 ## Sanity check
 
-With `--eps-final 0` and `--kappa-wst-final 0`, the WocaR path should behave like the plain baseline (plain PPO for `wocar_ppo`, plain independent DQN for `wocar_dqn`). If the learning curves differ, the bug is in the integration, not in the method.
+For `wocar_ppo`, `--eps-final 0` and `--kappa-wst-final 0` remove the WocaR terms and should match the plain PPO baseline. This check does not apply to `wocar_dqn`: its `kappa_wst` schedule is fixed in code at a final value of 0.5, so the CLI options cannot make it equivalent to plain independent DQN.

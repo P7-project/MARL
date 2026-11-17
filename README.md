@@ -5,7 +5,7 @@ Three training modes share one entry point (`scripts/train.py`, selected with `-
 | Mode | Algorithm | Environment |
 |---|---|---|
 | `mappo` (default) | MAPPO | multi-agent highway, discrete actions |
-| `wocar_dqn` | WocaR-DQN | multi-agent highway, discrete actions |
+| `wocar_dqn` | WocaR-DQN | multi-agent highway or intersection, discrete actions |
 | `wocar_ppo` | WocaR-PPO | single-agent MuJoCo, continuous actions |
 
 ## MAPPO design
@@ -36,6 +36,8 @@ Other modes:
 
 ```bash
 uv run scripts/train.py --update-function wocar_dqn --total-steps 200000 --save woca_dqn.pt
+uv run scripts/train.py --update-function wocar_dqn --dqn-env intersection --agents 2 \
+    --total-steps 200000 --save woca_dqn_intersection.pt
 uv run scripts/train.py --update-function wocar_ppo --env-id Hopper-v5 --total-steps 2000000 --save woca_ppo.pt
 ```
 

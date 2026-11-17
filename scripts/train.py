@@ -74,6 +74,12 @@ def build_parser() -> argparse.ArgumentParser:
     # WocaR-DQN only (read by train_dqn)
     parser.add_argument("--adam-eps", type=float, default=1.5e-4) 
     parser.add_argument("--regularizer-margin", type=float, default=1)
+    parser.add_argument(
+        "--dqn-env",
+        choices=["highway", "intersection"],
+        default="highway",
+        help="Environment for WocaR-DQN",
+    )
     parser.add_argument("--hidden", type=int, default=64)  # width of the three Q-networks
     parser.add_argument("--target-update-every", type=int, default=2000)  # placeholder: official update_target_frame is in the base config
     parser.add_argument("--worst-ratio", type=float, default=0.1)  # official worst_ratio: weight of Q_phi in the target-action mix
