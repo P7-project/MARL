@@ -28,8 +28,6 @@
 
 from __future__ import annotations
 
-import argparse
-from copy import deepcopy
 from dataclasses import dataclass
 from math import exp
 from typing import Literal, NamedTuple, Optional
@@ -50,7 +48,7 @@ from argparse import Namespace
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
-from ..env import build_actor_obs, flatten_obs, make_env
+from ..env import any_vehicle_crashed, build_actor_obs, flatten_obs, make_env
 
 from functools import partial
 
@@ -550,11 +548,13 @@ def train_dqn(args: Namespace, console: Console) -> None:
                 metrics = trainer.update(buffer.sample(args.batch_size), step)  # global env step drives eps_t, kappa_wst
                 if step % 100 == 0:
                     for name, value in metrics._asdict().items():
-                        writer.add_scalar(f"woca/{name}", value, step)
+                      if np.isfinite(value):
+                          writer.add_scalar(f"woca/{name}", value, step)
 
             if renderer is not None:
                 renderer.publish_if_due(step, trainer.robust_q_state_dict)
 
+    with console.status("[bold green]Saving WocaR-DQN..."):
         if args.save:
             torch.save(
                 {
@@ -568,10 +568,12 @@ def train_dqn(args: Namespace, console: Console) -> None:
                 },
                 args.save,
             )
-    if renderer is not None:
-        renderer.close()
-    writer.close()
-    env.close()
+
+    with console.status("[bold green]Cleaning up..."):
+        if renderer is not None:
+            renderer.close()
+        writer.close()
+        env.close()
 
 
 def _build_trainer(
@@ -705,14 +707,7 @@ class DqnPlayer(PolicyPlayer):
         episode_truncated = np.asarray(truncated, dtype=np.bool_)
         finished: bool = bool(agent_terminated.all()) or bool(episode_truncated.any())
         reward: float = float(np.asarray(_reward, dtype=np.float32).mean())
-        crash_value = None
-        if isinstance(_info, dict):
-            crash_value = _info.get("crashed", _info.get("agents_crashed"))
-        crashed: bool | None = (
-            None
-            if crash_value is None
-            else bool(np.asarray(crash_value, dtype=np.bool_).any())
-        )
+        crashed: bool = any_vehicle_crashed(self._env)
         return StepResult(finished=finished, reward=reward, crashed=crashed)
 
     def close(self) -> None:
