@@ -72,9 +72,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--kappa-wst-shape", choices=["linear", "exponential"], default="linear") # linear or exponential, the ramp shape. Exponential only on Ant.
 
     # WocaR-DQN only (read by train_dqn)
+    parser.add_argument("--adam-eps", type=float, default=1.5e-4) 
+    parser.add_argument("--regularizer-margin", type=float, default=1)
     parser.add_argument("--hidden", type=int, default=64)  # width of the three Q-networks
-    parser.add_argument("--tau", type=float, default=0.005)  # soft-update coefficient for Q_v'
-    parser.add_argument("--lr", type=float, default=1e-4)  # learning rate for Q_v, Q_phi and Q_r
+    parser.add_argument("--target-update-every", type=int, default=2000)  # placeholder: official update_target_frame is in the base config
+    parser.add_argument("--worst-ratio", type=float, default=0.1)  # official worst_ratio: weight of Q_phi in the target-action mix
+    parser.add_argument("--worst-rate", type=int, default=100)  # Q_phi step every N updates
+    parser.add_argument("--worst-eps-final", type=float, default=0.005)  # radius of the worst-case loss; pixel scale in the official config, tune for ours
+    parser.add_argument("--worst-schedule", type=int, default=0)  # ramp length is max(total-steps, this)
+    parser.add_argument("--worst-kappa-final", type=float, default=0.1)  # TD weight ramps 1 -> this
+    parser.add_argument("--reachable-eps", type=float, default=1e-7)  # official radius for the reachable-action set
+    parser.add_argument("--reachable-eps-scheduled", action="store_true")  # use the scheduled eps instead (paper description)    parser.add_argument("--lr", type=float, default=1e-4)  # learning rate for Q_v, Q_phi and Q_r
+    parser.add_argument("--adam-eps", type=float, default=1.5e-4)
+    parser.add_argument("--regularizer-margin", type=float, default=1.0)  # hinge c
+    parser.add_argument("--mse-loss", action="store_true")  # MSE instead of Huber
     parser.add_argument("--buffer-size", type=int, default=100_000)  # replay buffer capacity, in transitions (one per agent per env step)
     parser.add_argument("--warmup", type=int, default=5_000)  # transitions in the buffer before updates start; also when eps_t starts ramping
     parser.add_argument("--batch-size", type=int, default=64)  # minibatch size per update
