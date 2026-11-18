@@ -5,10 +5,30 @@ import numpy as np
 from highway_env import utils
 from highway_env.envs.highway_env import HighwayEnv
 from highway_env.vehicle.controller import ControlledVehicle
+from marl.render_viewer import MultiAgentEnvViewer
 
 
 class TeamHighwayEnv(HighwayEnv):
     """Highway driving with one reward and episode outcome shared by all controlled vehicles."""
+
+
+    def __init__(self, config=None, render_mode=None):
+        super().__init__(config=config, render_mode=render_mode)
+
+    def render(self):
+        if self.viewer is None:
+            self.viewer = MultiAgentEnvViewer(self)
+        return super().render()
+
+
+    def set_attacked_agents(self, agent_indices: list[int]) -> None:
+        """Set the agents whose vehicles should be highlighted during rendering."""
+        self.attacked_agents = set(agent_indices)
+
+         # Mark each controlled vehicle according to whether its agent is attacked.
+        for agent_idx, vehicle in enumerate(self.controlled_vehicles):
+            vehicle.attacked = agent_idx in self.attacked_agents
+           
 
     def _reward(self, action) -> float:
         """Average the per-vehicle driving reward over all controlled vehicles."""
@@ -89,11 +109,11 @@ class TeamHighwayEnv(HighwayEnv):
 
 gym.register(id="team-highway-v0", entry_point=TeamHighwayEnv)
 
-def make_env(n_agents: int = 3, render_mode=None, name: str = "highway",) -> gym.Env:
+def make_env(n_agents: int = 3, render_mode=None, name: str = "highway", render_agents: int = 1) -> gym.Env:
     if name == "intersection":
         return make_intersection_env(n_agents, render_mode)
     if name == "highway":
-        return make_highway_env(n_agents, render_mode)
+        return make_highway_env(n_agents, render_mode, render_agents)
     raise ValueError(f"Unknown environment: {name}")
 
 
@@ -105,9 +125,12 @@ def make_intersection_env(n_agents: int = 3, render_mode=None) -> gym.Env:
     )
 
 
-def make_highway_env(n_agents: int = 3, render_mode=None) -> gym.Env:
+def make_highway_env(n_agents: int = 3, render_mode=None, render_agents: int = 1,) -> gym.Env:
     config = {
         "controlled_vehicles": n_agents,
+        "render_agents": render_agents,
+        "screen_width": 900,
+        "screen_height": 450,
         "observation": {
             "type": "MultiAgentObservation",
             "observation_config": {
@@ -141,4 +164,4 @@ def flatten_obs(obs) -> np.ndarray:
 def build_actor_obs(obs_flat: np.ndarray, n_agents: int) -> np.ndarray:
     """Append one-hot agent IDs to the per-agent observations."""
     agent_ids = np.eye(n_agents, dtype=np.float32)
-    return np.concatenate([obs_flat, agent_ids], axis=-1)
+    return  np.concatenate([obs_flat, agent_ids], axis=-1)
