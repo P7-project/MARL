@@ -60,6 +60,10 @@ from torch.utils.tensorboard import SummaryWriter
 
 from ..env import build_actor_obs, flatten_obs, make_env
 
+from functools import partial
+
+from ..rendering import AsyncPolicyRenderer, PolicyPlayer, StepResult, Weights, create_renderer
+
 
 class Batch(NamedTuple):
     states: Tensor  # [batch, *observation_shape]
@@ -486,7 +490,8 @@ def train_dqn(args: Namespace, console: Console) -> None:
         torch.manual_seed(args.seed)
 
         n_agents: int = args.agents
-        env = make_env(n_agents)
+        env_name: str = getattr(args, "dqn_env", "highway")
+        env = make_env(n_agents, name=env_name)
         observation_space = env.observation_space
         action_space = env.action_space
         assert isinstance(observation_space, spaces.Tuple)
@@ -503,6 +508,10 @@ def train_dqn(args: Namespace, console: Console) -> None:
         trainer: WocaRDQNTrainer = _build_trainer(obs_dim, n_agents, n_actions, args, device)
         buffer: ReplayBuffer = ReplayBuffer(args.buffer_size, input_dim, device)
         writer: SummaryWriter = SummaryWriter(f"{args.logdir}/{args.run_name}")
+        renderer: AsyncPolicyRenderer | None = create_renderer(
+            args,
+            partial(DqnPlayer, n_agents, obs_dim, n_actions, args.hidden, env_name),
+        )
 
         obs: np.ndarray = flatten_obs(env.reset(seed=args.seed)[0])
         episode_return: float = 0.0
@@ -514,15 +523,43 @@ def train_dqn(args: Namespace, console: Console) -> None:
             actions: list[int] = _select_actions(trainer, actor_obs, _exploration_probability(step, args))
 
             next_obs, reward, terminated, truncated, _info = env.step(tuple(actions))
+            agent_rewards: np.ndarray = np.asarray(reward, dtype=np.float32).reshape(-1)
+            if agent_rewards.size == 1:
+                agent_rewards = np.full(n_agents, agent_rewards.item(), dtype=np.float32)
+            elif agent_rewards.size != n_agents:
+                raise ValueError(
+                    f"Expected 1 or {n_agents} rewards, got {agent_rewards.size}"
+                )
+
+            agent_terminated: np.ndarray = np.asarray(terminated, dtype=np.bool_).reshape(-1)
+            if agent_terminated.size == 1:
+                agent_terminated = np.full(
+                    n_agents, agent_terminated.item(), dtype=np.bool_
+                )
+            elif agent_terminated.size != n_agents:
+                raise ValueError(
+                    f"Expected 1 or {n_agents} termination flags, "
+                    f"got {agent_terminated.size}"
+                )
+
+            episode_done: bool = bool(agent_terminated.all()) or bool(
+                np.asarray(truncated, dtype=np.bool_).any()
+            )
             next_obs = flatten_obs(next_obs)
             # Built before any reset, so it is the real next observation.
             next_actor_obs: Tensor = _to_tensor(build_actor_obs(next_obs, n_agents), device)
 
             for agent in range(n_agents):
-                buffer.add(actor_obs[agent], actions[agent], float(reward), next_actor_obs[agent], float(terminated))
+                buffer.add(
+                    actor_obs[agent],
+                    actions[agent],
+                    float(agent_rewards[agent]),
+                    next_actor_obs[agent],
+                    float(agent_terminated[agent]),
+                )
 
-            episode_return += float(reward)
-            if terminated or truncated:
+            episode_return += float(agent_rewards.mean())
+            if episode_done:
                 writer.add_scalar("episode/return", episode_return, step)
                 episode_return = 0.0
                 next_obs = flatten_obs(env.reset()[0])
@@ -534,8 +571,24 @@ def train_dqn(args: Namespace, console: Console) -> None:
                     for name, value in metrics._asdict().items():
                         writer.add_scalar(f"woca/{name}", value, step)
 
-    if args.save:
-        torch.save(trainer.robust_q_state_dict(), args.save)
+            if renderer is not None:
+                renderer.publish_if_due(step, trainer.robust_q_state_dict)
+
+        if args.save:
+            torch.save(
+                {
+                    "algorithm": "wocar_dqn",
+                    "robust_q": trainer.robust_q_state_dict(),
+                    "n_agents": n_agents,
+                    "obs_dim": obs_dim,
+                    "n_actions": n_actions,
+                    "hidden": args.hidden,
+                    "dqn_env": env_name,
+                },
+                args.save,
+            )
+    if renderer is not None:
+        renderer.close()
     writer.close()
     env.close()
 
@@ -546,11 +599,7 @@ def _build_trainer(
     input_dim: int = obs_dim + n_agents
     vanilla_q: nn.Module = mlp(input_dim, n_actions, args.hidden, out_gain=1.0).to(device)
     worst_attack_q: nn.Module = mlp(input_dim, n_actions, args.hidden, out_gain=1.0).to(device)
-    robust_q: BoundedModule = BoundedModule(
-        mlp(input_dim, n_actions, args.hidden, out_gain=1.0).to(device),
-        torch.zeros(1, input_dim, device=device),
-        device=device.type,
-    )
+    robust_q: BoundedModule = _build_robust_q(input_dim, n_actions, args.hidden, device)
     # Perturb the observation part, never the one-hot agent id.
     perturbation_scale: Tensor = torch.cat(
         [torch.ones(obs_dim), torch.zeros(n_agents)]
@@ -579,6 +628,13 @@ def _build_trainer(
         perturbation_scale=perturbation_scale,
     )
     return WocaRDQNTrainer(vanilla_q, robust_q, worst_attack_q, config)
+
+def _build_robust_q(input_dim: int, n_actions: int, hidden: int, device: torch.device) -> BoundedModule:
+    return BoundedModule(
+        mlp(input_dim, n_actions, hidden, out_gain=1.0).to(device),
+        torch.zeros(1, input_dim, device=device),
+        device=device.type,
+    )
 
 
 def _select_actions(trainer: WocaRDQNTrainer, actor_obs: Tensor, exploration_probability: float) -> list[int]:
@@ -628,3 +684,70 @@ class ReplayBuffer:
             next_states=self._next_states[indices],
             terminated=self._terminated[indices],
         )
+
+
+class DqnPlayer(PolicyPlayer):
+    """Plays the greedy Q_r policy in a multi-agent driving environment."""
+
+    def __init__(
+        self,
+        n_agents: int,
+        obs_dim: int,
+        n_actions: int,
+        hidden: int,
+        env_name: str = "highway",
+    ) -> None:
+        self._n_agents: int = n_agents
+        self._device: torch.device = torch.device("cpu")
+        self._env = make_env(n_agents, render_mode="human", name=env_name)
+        self._policy: BoundedModule = _build_robust_q(
+            obs_dim + n_agents, n_actions, hidden, self._device
+        )
+        self._policy.eval()
+        self._obs: np.ndarray | None = None
+
+    def load_weights(self, weights: Weights) -> None:
+        self._policy.load_state_dict(weights)
+
+    def start_episode(self) -> None:
+        self._obs = flatten_obs(self._env.reset()[0])
+
+    def step(self) -> StepResult:
+        if self._obs is None:
+            raise RuntimeError("start_episode must be called before step")
+        actions: list[int] = self._greedy_actions(self._obs)
+        next_obs, _reward, terminated, truncated, _info = self._env.step(tuple(actions))
+        self._env.render()
+        self._obs = flatten_obs(next_obs)
+        agent_terminated = np.asarray(terminated, dtype=np.bool_)
+        episode_truncated = np.asarray(truncated, dtype=np.bool_)
+        finished: bool = bool(agent_terminated.all()) or bool(episode_truncated.any())
+        reward: float = float(np.asarray(_reward, dtype=np.float32).mean())
+        crash_value = None
+        if isinstance(_info, dict):
+            crash_value = _info.get("crashed", _info.get("agents_crashed"))
+        crashed: bool | None = (
+            None
+            if crash_value is None
+            else bool(np.asarray(crash_value, dtype=np.bool_).any())
+        )
+        return StepResult(finished=finished, reward=reward, crashed=crashed)
+
+    def close(self) -> None:
+        self._env.close()
+
+    @torch.no_grad()
+    def _greedy_actions(self, obs: np.ndarray) -> list[int]:
+        actor_obs: Tensor = _to_tensor(build_actor_obs(obs, self._n_agents), self._device)
+        q_values: Tensor = self._policy(actor_obs)  # [n_agents, n_actions]
+        return [int(action) for action in q_values.argmax(dim=1)]
+def build_dqn_player(checkpoint: dict) -> PolicyPlayer:
+    player = DqnPlayer(
+        checkpoint["n_agents"],
+        checkpoint["obs_dim"],
+        checkpoint["n_actions"],
+        checkpoint["hidden"],
+        env_name=checkpoint.get("dqn_env", "highway"),
+    )
+    player.load_weights(checkpoint["robust_q"])
+    return player
