@@ -173,6 +173,13 @@ class WocaRDQNTrainer:
             mean_reachable_actions=mean_reachable,
         )
 
+
+    @torch.no_grad()
+    def mean_reachable_actions_at(self, batch: Batch, radius: float) -> float:
+        bounds: QValueBounds = self._bounder.bounds(batch.next_states, radius)
+        reachable: Tensor = self._estimator.mask(bounds)
+        return float(reachable.float().sum(dim=1).mean())
+
     # ----------------------------------------------------------------- Q_r ---
 
     def _update_robust_q(
@@ -549,11 +556,17 @@ def train_dqn(args: Namespace, console: Console) -> None:
             obs = next_obs
 
             if len(buffer) >= args.warmup:
-                metrics = trainer.update(buffer.sample(args.batch_size), step)  # global env step drives eps_t, kappa_wst
+                batch: Batch = buffer.sample(args.batch_size)
+                metrics = trainer.update(batch, step)  # global env step drives eps_t, kappa_wst
                 if step % 100 == 0:
                     for name, value in metrics._asdict().items():
                       if np.isfinite(value):
                           writer.add_scalar(f"woca/{name}", value, step)
+                    writer.add_scalar(
+                        "woca/reachable_at_eps_final",
+                        trainer.mean_reachable_actions_at(batch, args.eps_final),
+                        step,
+                    )
 
             if renderer is not None:
                 renderer.publish_if_due(step, trainer.robust_q_state_dict)
