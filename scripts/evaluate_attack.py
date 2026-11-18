@@ -65,6 +65,10 @@ def parse_args():
     parser.add_argument("--logdir", type=str, default="runs")
     parser.add_argument("--run-name",type=str,default=datetime.now().strftime("%Y%m%d-%H%M%S"))
 
+    # Rendering
+    parser.add_argument("--render", action="store_true", help="Display the environment during evaluation."
+)
+
     args = parser.parse_args()
 
     if args.epsilon < 0:
@@ -91,7 +95,9 @@ def parse_args():
 
 
 def load_model(args, device):
-    env = make_env(args.agents)
+
+    render_mode = "human" if args.render else None
+    env = make_env(args.agents, render_mode=render_mode)
 
     assert isinstance(env.observation_space, Tuple)
     assert isinstance(env.action_space, Tuple)
@@ -151,6 +157,8 @@ def evaluate(args, trainer, env, device):
             while not done:
                 if attacker is not None:
                     obs = attacker.attack(obs)
+                    # Tell the environment which vehicles should be highlighted during rendering.
+                    env.unwrapped.set_attacked_agents(attacker.last_attacked_agents)
 
                 actor_obs = build_actor_obs(obs, args.agents)
                 actor_obs = _to_tensor(actor_obs, device)
@@ -164,6 +172,9 @@ def evaluate(args, trainer, env, device):
                 next_obs, reward, terminated, truncated, info = env.step(
                     tuple(actions)
                 )
+
+                if args.render:
+                    env.render()
 
                 total_reward += float(np.mean(reward))
                 obs = flatten_obs(next_obs)

@@ -40,6 +40,9 @@ class RandomObservationAttacker:
         # Dedicated random number generator.
         self.rng = np.random.default_rng(seed)
 
+        # Stores the agents attacked at the most recent timestep.
+        self.last_attacked_agents: List[int] = []
+
 
 
         # Validate the attack configuration.
@@ -93,13 +96,16 @@ class RandomObservationAttacker:
         """
           Apply random noise to selected agents with a given probability.
 
-        observations: Array with shape (n_agents, obs_dim).
         """
 
         # Create a copy so the original observations remain unchanged.
         attacked_observations = observations.copy()
 
+        # Reset the list because each timestep gets a new attack decision.
+        self.last_attacked_agents = []
+
         # Decide whether an attack happens at this timestep.
+        # rng.random() generates values in [0.0, 1.0)
         if self.rng.random() >= self.attack_probability:
             return attacked_observations
 
@@ -108,6 +114,9 @@ class RandomObservationAttacker:
 
         # Select agents to attack at this timestep.
         selected_agents = self._select_agents(n_agents)
+
+        # Remember which agents are being attacked for visualization.
+        self.last_attacked_agents = selected_agents
 
         # Apply noise to each selected agent.
         for agent in selected_agents:
