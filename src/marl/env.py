@@ -5,208 +5,21 @@ import numpy as np
 from highway_env import utils
 from highway_env.envs.highway_env import HighwayEnv
 from highway_env.vehicle.controller import ControlledVehicle
-import pygame
-from highway_env.vehicle.graphics import VehicleGraphics
-
-
-from highway_env.envs.common.graphics import EnvViewer, ObservationGraphics
-from highway_env.road.graphics import RoadGraphics
-
-ATTACKED_ATTRIBUTE = "attacked"
-
-
-class AttackedVehicleGraphics(VehicleGraphics):
-    """Draw a red outline around vehicles receiving observation attacks."""
-
-
-    @classmethod
-    def display(
-        cls,
-        vehicle,
-        surface,
-        transparent=False,
-        offscreen=False,
-        label=False,
-        draw_roof=False,
-    ) -> None:
-
-
-     # Draw the vehicle using the original renderer.
-        super().display(
-            vehicle,
-            surface,
-            transparent=transparent,
-            offscreen=offscreen,
-            label=label,
-            draw_roof=draw_roof,
-        )
-
-     
-
-        # Only highlight vehicles marked as attacked.
-        if getattr(vehicle, ATTACKED_ATTRIBUTE, False):
-
-            # Convert the vehicle dimensions from world coordinates to pixels.
-            # Add a small margin so the outline sits just outside the vehicle.
-
-            length = surface.pix(vehicle.LENGTH + 2)
-            width = surface.pix(vehicle.WIDTH + 1)
-
-            # Create a transparent square surface for drawing the vehicle outline.
-            vehicle_surface = pygame.Surface(
-                (length, length),
-                flags=pygame.SRCALPHA,
-            )
-
-            # Draw a red rectangle around the vehicle.
-            pygame.draw.rect(
-                vehicle_surface,
-                (255, 0, 0),
-                (
-                    surface.pix(1),
-                    (length - width) // 2,
-                    surface.pix(vehicle.LENGTH),
-                    width,
-                ),
-                width=3,
-            )
-
-            # Rotate the outline to match the vehicle's heading and draw it
-            cls.blit_rotate(
-                surface,
-                vehicle_surface,
-                [*surface.pos2pix(vehicle.position[0], vehicle.position[1])],
-                np.rad2deg(-vehicle.heading),
-            )
-
-            
-class AttackedRoadGraphics(RoadGraphics):
-    """Render road traffic using the custom attacked-vehicle renderer."""
-
-    @staticmethod
-    def display_traffic(
-        road,
-        surface,
-        simulation_frequency=15,
-        offscreen=False,
-    ) -> None:
-
-        # Draw each vehicle's history and then render the vehicle itself.
-        for vehicle in road.vehicles:
-            VehicleGraphics.display_history(
-                vehicle, surface, simulation_frequency
-            )
-            # Use the custom renderer to highlight attacked vehicles.
-            AttackedVehicleGraphics.display(
-                vehicle, surface, offscreen=offscreen
-            )
-
-        
-
-         
-
-class AttackedEnvViewer(EnvViewer):
-    """Render the environment with attacked vehicles highlighted."""
-
-
-    def display(self) -> None:
-        """Display the road and vehicles using custom graphics."""
-
-        if not self.enabled:
-            return
-
-        # Position the simulation view according to the current observer position.
-        self.sim_surface.move_display_window_to(self.window_position())
-
-
-        # Draw the road, including its lanes and markings, onto the simulation surface.
-        RoadGraphics.display(self.env.road, self.sim_surface)
-
-
-        # Draw the vehicle trajectory, if one is available.
-        if self.vehicle_trajectory:
-            VehicleGraphics.display_trajectory(
-                self.vehicle_trajectory,
-                self.sim_surface,
-                offscreen=self.offscreen,
-            )
-
-
-        # Draw road objects, such as obstacles, on the simulation surface.
-        RoadGraphics.display_road_objects(
-            self.env.road,
-            self.sim_surface,
-            offscreen=self.offscreen,
-        )
-
-
-        # Draw the optional agent visualization, if one has been configured.
-        if EnvViewer.agent_display:
-
-            # Render the agent visualization onto the separate agent surface.
-            EnvViewer.agent_display(self.agent_surface, self.sim_surface)
-
-            # Display the agent visualization only when rendering to the screen.
-            if not self.offscreen:
-
-                # For landscape screens, position the agent visualization below the simulation.
-                if self.config["screen_width"] > self.config["screen_height"]:
-                    self.screen.blit(
-                        self.agent_surface,
-                        (0, self.config["screen_height"]),
-                    )
-                # For portrait screens, position it to the right of the simulation.
-                else:
-                    self.screen.blit(
-                        self.agent_surface,
-                        (self.config["screen_width"], 0),
-                    )
-
-
-
-        # Draw road traffic using the custom renderer.
-        AttackedRoadGraphics.display_traffic(
-            self.env.road,
-            self.sim_surface,
-            simulation_frequency=self.env.config["simulation_frequency"],
-            offscreen=self.offscreen,
-        )
-
-
-        # Draw the current observation on the simulation surface.
-        ObservationGraphics.display(
-            self.env.observation_type,
-            self.sim_surface,
-        )
-
-
-        # Update the screen when rendering to a visible display.
-        if not self.offscreen:
-            self.screen.blit(self.sim_surface, (0, 0))
-
-            # Maintain the configured simulation frequency during real-time rendering.
-            if self.env.config["real_time_rendering"]:
-                self.clock.tick(self.env.config["simulation_frequency"])
-
-            # Refresh the display to show the latest simulation frame.
-            pygame.display.flip()
-
-        # Save the current simulation frame if image saving is enabled.
-        if self.SAVE_IMAGES and self.directory:
-            pygame.image.save(
-                self.sim_surface,
-                str(self.directory / f"highway-env_{self.frame}.png"),
-            )
-
-            # Increment the frame counter for the next saved image.
-            self.frame += 1
-
-
-
+from marl.render_viewer import MultiAgentEnvViewer
 
 
 class TeamHighwayEnv(HighwayEnv):
     """Highway driving with one reward and episode outcome shared by all controlled vehicles."""
+
+
+    def __init__(self, config=None, render_mode=None):
+        super().__init__(config=config, render_mode=render_mode)
+
+    def render(self):
+        if self.viewer is None:
+            self.viewer = MultiAgentEnvViewer(self)
+        return super().render()
+
 
     def set_attacked_agents(self, agent_indices: list[int]) -> None:
         """Set the agents whose vehicles should be highlighted during rendering."""
@@ -217,15 +30,6 @@ class TeamHighwayEnv(HighwayEnv):
             vehicle.attacked = agent_idx in self.attacked_agents
            
 
-
-    def render(self):
-        # Create the custom viewer the first time rendering is requested.
-        if self.render_mode is not None and self.viewer is None:
-            self.viewer = AttackedEnvViewer(self)
-
-        # Continue with HighwayEnv's original rendering process.
-        return super().render()
-    
     def _reward(self, action) -> float:
         """Average the per-vehicle driving reward over all controlled vehicles."""
         return float(
@@ -305,11 +109,11 @@ class TeamHighwayEnv(HighwayEnv):
 
 gym.register(id="team-highway-v0", entry_point=TeamHighwayEnv)
 
-def make_env(n_agents: int = 3, render_mode=None, name: str = "highway",) -> gym.Env:
+def make_env(n_agents: int = 3, render_mode=None, name: str = "highway", render_agents: int = 1) -> gym.Env:
     if name == "intersection":
         return make_intersection_env(n_agents, render_mode)
     if name == "highway":
-        return make_highway_env(n_agents, render_mode)
+        return make_highway_env(n_agents, render_mode, render_agents)
     raise ValueError(f"Unknown environment: {name}")
 
 
@@ -321,9 +125,12 @@ def make_intersection_env(n_agents: int = 3, render_mode=None) -> gym.Env:
     )
 
 
-def make_highway_env(n_agents: int = 3, render_mode=None) -> gym.Env:
+def make_highway_env(n_agents: int = 3, render_mode=None, render_agents: int = 1,) -> gym.Env:
     config = {
         "controlled_vehicles": n_agents,
+        "render_agents": render_agents,
+        "screen_width": 900,
+        "screen_height": 450,
         "observation": {
             "type": "MultiAgentObservation",
             "observation_config": {
@@ -357,4 +164,4 @@ def flatten_obs(obs) -> np.ndarray:
 def build_actor_obs(obs_flat: np.ndarray, n_agents: int) -> np.ndarray:
     """Append one-hot agent IDs to the per-agent observations."""
     agent_ids = np.eye(n_agents, dtype=np.float32)
-    return np.concatenate([obs_flat, agent_ids], axis=-1)
+    return  np.concatenate([obs_flat, agent_ids], axis=-1)

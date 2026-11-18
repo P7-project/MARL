@@ -67,6 +67,26 @@ These should match the configuration of the trained checkpoint.
 | `--eps-final`   | 0.075   |
 | `--kappa-reg`   | 0.1     |
 
+## Rendering
+
+The evaluator supports rendering multiple agent perspectives simultaneously in a single window.
+
+Each rendered agent gets its own camera view, following that agent's vehicle. The views are arranged automatically in a grid layout based on the number of rendered agents.
+
+Rendering is enabled using `--render`.
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `--render` | Disabled | Enables visual rendering during evaluation. |
+| `--render-agents` | Number of agents | Number of agent perspectives displayed in the rendering window. |
+
+The total number of agents and the number of rendered agents are independent settings. For example, an environment can contain three agents while displaying only two camera views.
+
+Example:
+
+```bash
+# Render two agent perspectives in an environment with three agents
+uv run python scripts/evaluate_attack.py --checkpoint wocar_dqn_test.pt --mode attacked --episodes 5 --render --agents 3 --render-agents 2 --target-mode random --attack-probability 0.8
 ## Outputs
 
 The evaluator prints the average reward and reward standard deviation.

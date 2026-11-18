@@ -23,7 +23,7 @@ from marl.woca_r_rl.dqn import (
 
 from rich.progress import Progress
 
-from marl.experiments.random_attack import RandomObservationAttacker
+from marl.attacks.random_attack import RandomObservationAttacker
 
 class EvaluationMode(Enum):
     clean = "clean"
@@ -66,8 +66,8 @@ def parse_args():
     parser.add_argument("--run-name",type=str,default=datetime.now().strftime("%Y%m%d-%H%M%S"))
 
     # Rendering
-    parser.add_argument("--render", action="store_true", help="Display the environment during evaluation."
-)
+    parser.add_argument("--render", action="store_true", help="Display the environment during evaluation.")
+    parser.add_argument("--render-agents",type=int,default=1,help="Number of agent camera views to display.")
 
     args = parser.parse_args()
 
@@ -91,13 +91,24 @@ def parse_args():
         if args.target_agents is None:
             parser.error("--target-agents is required when using fixed targeting.")
 
+
+    if args.render_agents < 1:
+        parser.error("--render-agents must be at least 1.")
+
+    if args.render_agents > args.agents:
+        parser.error("--render-agents cannot exceed --agents.")
+
     return args
 
 
 def load_model(args, device):
 
     render_mode = "human" if args.render else None
-    env = make_env(args.agents, render_mode=render_mode)
+    env = env = make_env(
+        args.agents,
+        render_mode=render_mode,
+        render_agents=args.render_agents,
+    )
 
     assert isinstance(env.observation_space, Tuple)
     assert isinstance(env.action_space, Tuple)
@@ -121,7 +132,7 @@ def load_model(args, device):
     )
 
     checkpoint = torch.load(args.checkpoint, map_location=device)
-    trainer.load_robust_q_state_dict(checkpoint)
+    trainer.load_robust_q_state_dict(checkpoint["robust_q"])
 
     return trainer, env
 
