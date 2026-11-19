@@ -82,6 +82,7 @@ class WocaRDQNConfig:
     adam_epsilon: float = 1.5e-4
     use_huber_loss: bool = True
     regularizer_margin: float = 1.0  # official hinge_c
+    use_double_dqn: bool = False
     bound_method: str = "IBP"
     perturbation_scale: Optional[Tensor] = None
 
@@ -495,6 +496,7 @@ def train_dqn(args: Namespace, console: Console) -> None:
         n_agents: int = args.agents
         env_name: str = getattr(args, "dqn_env", "highway")
         env = make_env(n_agents, name=env_name)
+
         observation_space = env.observation_space
         action_space = env.action_space
         assert isinstance(observation_space, spaces.Tuple)
