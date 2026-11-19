@@ -1,5 +1,7 @@
 """Highway environment setup and observation helpers."""
 
+from typing import Any
+
 import gymnasium as gym
 import numpy as np
 from highway_env import utils
@@ -136,6 +138,11 @@ def flatten_obs(obs) -> np.ndarray:
     return np.stack(
         [np.asarray(agent_obs, dtype=np.float32).reshape(-1) for agent_obs in obs]
     )
+
+
+def any_vehicle_crashed(env: gym.Env) -> bool:
+    unwrapped: Any = env.unwrapped  # highway-env specific attributes are unknown to the type checker
+    return any(vehicle.crashed for vehicle in unwrapped.controlled_vehicles)
 
 
 def build_actor_obs(obs_flat: np.ndarray, n_agents: int) -> np.ndarray:
