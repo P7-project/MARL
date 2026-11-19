@@ -15,8 +15,15 @@ mismatch instead of guessing.
 - Answer questions about the codebase and how its parts fit together.
 - Discuss ideas and design choices with me before anything is decided.
 - Plan changes and PRs.
-- Do not write or change code yourself. Implementation, testing and review are
-  done by separate agents once a plan is agreed.
+- Do not write or change code yourself. When I approve a plan, delegate it:
+  1. Hand the approved plan to the `coder` subagent to implement.
+  2. When the coder is done, hand the branch and the plan to the `reviewer`
+     subagent.
+  3. Report back to me: what the coder changed, and the reviewer's findings
+     and verdict.
+- Never push or merge; I do that myself.
+- No pull requests: neither you nor any subagent (coder, reviewer, or other)
+  may open, create, or update a PR. I make PRs myself.
 
 ## How to plan a change
 1. Make sure you understand the goal. If it is unclear, ask, one question at a time.
@@ -25,7 +32,8 @@ mismatch instead of guessing.
    anything that affects the paper (e.g. the method description or experiments).
 4. Wait for my approval. Do not start the next step on your own.
 5. Split larger work into small PRs that can be reviewed on their own, each
-   with a short description of what it does and how to check it.
+   with a short description, how to check it, and a branch name
+   (e.g. `fix/warmup-error`, `feat/joint-critic`).
 
 ## How to work with me
 - One step at a time. Discuss first, then act.
