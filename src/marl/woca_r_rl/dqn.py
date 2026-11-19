@@ -23,6 +23,7 @@
     Q (worst-attack critic)                      worst_attack_q
     pi = argmax_a Q_r(s, a)                      robust_q
     eps_t, kappa_wst(t)                          RampSchedule
+    w(s)                                         _state_importance
     L_reg                                        SARegularizer
 """
 
@@ -225,7 +226,19 @@ class WocaRDQNTrainer:
         margin_lower: Tensor = self._bounder.margin_lower_bounds(
             states, best_actions, self._config.num_actions, epsilon
         )  # [batch, A-1]
-        return self._regularizer.per_state_loss(margin_lower).mean()
+        per_state_loss: Tensor = self._regularizer.per_state_loss(margin_lower)
+        weights: Tensor = self._state_importance(clean_q_values)
+        return (weights * per_state_loss).mean()
+
+    @staticmethod
+    @torch.no_grad()
+    def _state_importance(clean_q_values: Tensor) -> Tensor:
+        """
+            Math: w(s) = (max_a Q(s, a) - min_a Q(s, a)) / max over the batch,
+            the paper's state importance weight (Algorithm 2, line 16).
+        """
+        spread: Tensor = clean_q_values.max(dim=1).values - clean_q_values.min(dim=1).values
+        return spread / spread.max().clamp(min=1e-8)
 
     # --------------------------------------------------------------- Q_phi ---
 
