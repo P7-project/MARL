@@ -36,3 +36,4 @@ When done, report:
 - how you checked that it runs,
 - anything the plan did not cover or that the planner should know.
 - Commit your changes on the branch, but do not push or merge; I do that.
+- Never open, create or update a pull request (no `gh pr ...`); I make PRs myself.
