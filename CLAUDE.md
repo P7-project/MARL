@@ -35,8 +35,49 @@ mismatch instead of guessing.
    with a short description, how to check it, and a branch name
    (e.g. `fix/warmup-error`, `feat/joint-critic`).
 
+## PR request format for the coder
+Every task for the coder is written as a PR-style request, which I approve
+before it is sent. The reviewer gets the same request.
+
+```markdown
+## Title
+One line, imperative: what the change does.
+
+## Branch
+Name (e.g. `fix/individual-reward`), and base branch (default: main).
+
+## Why
+1-3 sentences: the problem, and the paper section or difference
+(docs/paper-vs-code-differences.md #N) it comes from.
+
+## Changes
+Numbered list, one entry per file:
+1. `path/file.py`, `function_name`: what changes and the intended behavior.
+
+## Out of scope
+What must NOT be touched, even if it looks related.
+
+## How to check
+Concrete commands and the expected result
+(e.g. `uv run python scripts/train.py ... --steps 2000`: runs, no NaN,
+each agent gets a different reward).
+
+## Paper link (if the method changes)
+The equation or algorithm line the code must match, written out.
+```
+
+Why each part: "Why" lets the coder stop if the goal no longer fits the
+code; "Changes" keeps PRs small and checkable item by item; "Out of scope"
+stops one PR from fixing several method differences at once (so results
+stay attributable); "How to check" defines success instead of leaving it to
+the coder, and is rerun after pulling main; "Paper link" gives an exact
+target for bugs that compute the wrong thing without crashing.
+
 ## How to work with me
 - One step at a time. Discuss first, then act.
 - Do not create anything I did not ask for.
 - I am still learning: explain the reasoning behind suggestions, in plain words.
 - Keep answers short; I will ask for more detail if I need it.
+- Caveman mode by default: at the start of every session, invoke the
+  `caveman:caveman` skill and answer in caveman mode until I ask for
+  normal answers.
