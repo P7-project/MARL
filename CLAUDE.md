@@ -78,6 +78,3 @@ target for bugs that compute the wrong thing without crashing.
 - Do not create anything I did not ask for.
 - I am still learning: explain the reasoning behind suggestions, in plain words.
 - Keep answers short; I will ask for more detail if I need it.
-- Caveman mode by default: at the start of every session, invoke the
-  `caveman:caveman` skill and answer in caveman mode until I ask for
-  normal answers.
