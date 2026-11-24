@@ -27,7 +27,8 @@ class UpdateFunction(Enum):
 def main() -> None:
     parser: argparse.ArgumentParser = build_parser()
     args: argparse.Namespace = parser.parse_args()
-    
+    resolve_save_path(args)
+
     if args.update_function == UpdateFunction.wocar_ppo.value:
         train_ppo(args)
     elif args.update_function == UpdateFunction.wocar_dqn.value:
@@ -54,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ent", type=float, default=0.01)
     parser.add_argument("--max-grad-norm", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--save", type=str, default=get_default_save_name())
+    parser.add_argument("--save", type=str, default=None)
     parser.add_argument("--logdir", type=str, default="runs")
     parser.add_argument("--run-name", type=str, default=datetime.now().strftime("%Y%m%d-%H%M%S"))
     parser.add_argument(
@@ -99,9 +100,22 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def get_default_save_name(save_directory: Path = Path(".")) -> str:
+def resolve_save_path(args: argparse.Namespace) -> None:
+    if args.save is None:
+        args.save = reserve_default_save_path()
+
+
+def reserve_default_save_path(save_directory: Path = Path(".")) -> str:
     next_number: int = _highest_save_number(save_directory) + 1
-    return str(save_directory / f"{DEFAULT_SAVE_STEM}.{next_number}.pt")
+    while True:
+        path: Path = save_directory / f"{DEFAULT_SAVE_STEM}.{next_number}.pt"
+        try:
+            with path.open("x"):
+                pass
+        except FileExistsError:
+            next_number += 1
+            continue
+        return str(path)
 
 
 def _highest_save_number(save_directory: Path) -> int:
