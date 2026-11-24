@@ -1,12 +1,17 @@
-"""Highway environment setup and observation helpers."""
-
-from typing import Any
+"""Team environment setup (MPE2 Simple Spread, highway-env) and observation helpers."""
 
 import gymnasium as gym
 import numpy as np
 from highway_env import utils
+from highway_env.envs.common.abstract import AbstractEnv
 from highway_env.envs.highway_env import HighwayEnv
 from highway_env.vehicle.controller import ControlledVehicle
+
+from .simple_spread import SimpleSpreadEnv
+
+ENV_NAMES: tuple[str, ...] = ("simple_spread", "highway", "intersection")
+DEFAULT_ENV_NAME: str = "simple_spread"  # CLI default
+LEGACY_ENV_NAME: str = "highway"  # for checkpoints saved before the env was recorded
 
 
 class TeamHighwayEnv(HighwayEnv):
@@ -91,7 +96,12 @@ class TeamHighwayEnv(HighwayEnv):
 
 gym.register(id="team-highway-v0", entry_point=TeamHighwayEnv)
 
-def make_env(n_agents: int = 3, render_mode=None, name: str = "highway",) -> gym.Env:
+def make_env(
+    n_agents: int = 3, render_mode: str | None = None, name: str = LEGACY_ENV_NAME
+) -> gym.Env:
+    """Build the named team environment with one observation and action per agent."""
+    if name == "simple_spread":
+        return SimpleSpreadEnv(n_agents, render_mode=render_mode)
     if name == "intersection":
         return make_intersection_env(n_agents, render_mode)
     if name == "highway":
@@ -140,8 +150,11 @@ def flatten_obs(obs) -> np.ndarray:
     )
 
 
-def any_vehicle_crashed(env: gym.Env) -> bool:
-    unwrapped: Any = env.unwrapped  # highway-env specific attributes are unknown to the type checker
+def any_vehicle_crashed(env: gym.Env) -> bool | None:
+    """Whether any controlled vehicle crashed, or None for envs without vehicles (MPE2)."""
+    unwrapped = env.unwrapped
+    if not isinstance(unwrapped, AbstractEnv):
+        return None
     return any(vehicle.crashed for vehicle in unwrapped.controlled_vehicles)
 
 

@@ -4,17 +4,39 @@ One entry point, three training modes selected by `--update-function`.
 
 | Value | Algorithm | Trainer | Environment |
 |---|---|---|---|
-| `mappo` | MAPPO baseline | `train` | multi-agent highway, discrete actions |
+| `mappo` | MAPPO baseline | `train` | `--env`: Simple Spread (default) or highway, discrete actions |
 | `wocar_ppo` | WocaR-PPO (Algorithm 1) | `train_ppo` | single-agent Mujoco, continuous actions |
-| `wocar_dqn` | WocaR-DQN (Algorithm 2) | `train_dqn` | multi-agent highway or intersection, discrete actions |
+| `wocar_dqn` | WocaR-DQN (Algorithm 2) | `train_dqn` | `--env`: Simple Spread (default), highway or intersection, discrete actions |
+
+## Environments (`--env`)
+
+| Value | Environment | Modes |
+|---|---|---|
+| `simple_spread` (default) | MPE2 [`simple_spread_v3`](https://mpe2.farama.org/main/environments/simple_spread/): `--agents` agents cover as many landmarks | `mappo`, `wocar_dqn` |
+| `highway` | `TeamHighwayEnv`, the previous default | `mappo`, `wocar_dqn` |
+| `intersection` | highway-env `intersection-multi-agent-v2` | `wocar_dqn` |
+
+`--dqn-env` is an older name for `--env` and still works.
+
+Simple Spread runs with `local_ratio=0`, discrete actions and the MPE2 default of 25 steps per episode. Every agent receives the same global reward (minus the sum over landmarks of the closest agent's distance), and the trainers count it once per step. The local collision penalty (-1 per collision) is weighted by `local_ratio`, so this setting omits it. The trainers bootstrap from the final observation when the time limit truncates an episode. WocaR-DQN uses Simple Spread's unbounded observation range, so `--eps-final` is in the environment's native observation units.
+
+Checkpoints record their environment. Older checkpoints without it play back on highway.
 
 Run commands from the repository root. `uv run --locked` uses dependencies from `uv.lock`.
 
 ## Examples
 
 ```bash
-# MAPPO baseline (defaults)
+# MAPPO baseline on Simple Spread (defaults)
 uv run --locked python scripts/train.py --update-function mappo
+
+# MAPPO on highway
+uv run --locked python scripts/train.py --update-function mappo --env highway
+
+# WocaR-DQN on Simple Spread with 4 agents
+uv run --locked python scripts/train.py --update-function wocar_dqn --agents 4 \
+    --total-steps 200000 --warmup 5000 --save woca_dqn_spread.pt \
+    --eps-final 0.01 --kappa-reg 0.01
 
 # WocaR-PPO on Hopper (mujoco is installed by `uv sync`)
 uv run --locked python scripts/train.py --update-function wocar_ppo --env-id Hopper-v5 \
@@ -22,17 +44,17 @@ uv run --locked python scripts/train.py --update-function wocar_ppo --env-id Hop
     --eps-final 0.075 --kappa-wst-final 0.8 --kappa-reg 0.1
 
 # WocaR-DQN on highway
-uv run --locked python scripts/train.py --update-function wocar_dqn --dqn-env highway --agents 3 \
+uv run --locked python scripts/train.py --update-function wocar_dqn --env highway --agents 3 \
     --total-steps 200000 --warmup 5000 --save woca_dqn.pt \
     --eps-final 0.01 --kappa-reg 0.01
 
 # WocaR-DQN on the multi-agent intersection
-uv run --locked python scripts/train.py --update-function wocar_dqn --dqn-env intersection --agents 2 \
+uv run --locked python scripts/train.py --update-function wocar_dqn --env intersection --agents 2 \
     --total-steps 200000 --warmup 5000 --save woca_dqn_intersection.pt \
     --eps-final 0.01 --kappa-reg 0.01
 
 # Rendered smoke run for WocaR-DQN on intersection (total-steps must exceed warmup)
-uv run --locked python scripts/train.py --update-function wocar_dqn --dqn-env intersection \
+uv run --locked python scripts/train.py --update-function wocar_dqn --env intersection \
     --agents 2 --total-steps 5000 --warmup 500 --render
 ```
 
@@ -53,7 +75,8 @@ An argument a mode does not read is accepted and ignored.
 | Argument | Default | Meaning |
 |---|---|---|
 | `--update-function` | `mappo` | Selects the mode: `mappo`, `wocar_ppo`, `wocar_dqn`. |
-| `--agents` | 3 | Number of controlled vehicles. Ignored by `wocar_ppo`. |
+| `--agents` | 3 | Number of agents (Simple Spread agents and landmarks, or controlled vehicles). Ignored by `wocar_ppo`. |
+| `--env` | `simple_spread` | Team environment for `mappo` and `wocar_dqn`; see [Environments](#environments---env). Ignored by `wocar_ppo`. |
 | `--total-steps` | 200000 | Total environment steps. |
 | `--seed` | 0 | Seeds numpy and torch. |
 | `--gamma` | 0.99 | Discount factor. |
@@ -100,7 +123,6 @@ All defaults are placeholders, not paper values.
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `--dqn-env` | `highway` | Environment: `highway` or `intersection`. |
 | `--hidden` | 64 | Width of `Q_v`, `Q_phi` and `Q_r`. |
 | `--tau` | 0.005 | Soft-update coefficient for the target `Q_v'`. |
 | `--lr` | 1e-4 | Learning rate for all three Q-networks. |

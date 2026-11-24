@@ -1,18 +1,20 @@
-# Multi-agent highway-env: MAPPO and WocaR-RL baselines
+# Cooperative MARL with MAPPO and WocaR-RL
 
 Three training modes share one entry point (`scripts/train.py`, selected with `--update-function`). All arguments are documented in [`scripts/train.md`](scripts/train.md).
 
 | Mode | Algorithm | Environment |
 |---|---|---|
-| `mappo` (default) | MAPPO | multi-agent highway, discrete actions |
-| `wocar_dqn` | WocaR-DQN | multi-agent highway or intersection, discrete actions |
+| `mappo` (default) | MAPPO | MPE2 Simple Spread (default) or highway, discrete actions |
+| `wocar_dqn` | WocaR-DQN | MPE2 Simple Spread (default), highway or intersection, discrete actions |
 | `wocar_ppo` | WocaR-PPO | single-agent MuJoCo, continuous actions |
+
+`--env` selects the team environment (`simple_spread`, `highway`, `intersection`). Simple Spread uses `local_ratio=0`, so all agents share the landmark coverage reward. See [`scripts/train.md`](scripts/train.md#environments---env) for the reward and episode settings.
 
 ## MAPPO design
 
 - **Parameter-shared actor:** one policy network used by all agents. A one-hot agent ID is appended to each agent's observation so they can specialise.
 - **Centralised critic:** V(s) takes the concatenation of all agents' observations.
-- **Team reward:** `TeamHighwayEnv` (`src/marl/env.py`) averages the per-vehicle highway-env reward over all controlled vehicles and ends the episode when any vehicle crashes. GAE is computed at team level and the same advantage is used for every agent's policy loss.
+- **Team reward:** GAE is computed from the shared environment reward, and the same advantage is used for every agent's policy loss. On highway, `TeamHighwayEnv` averages the per-vehicle rewards and ends the episode when a controlled vehicle crashes.
 
 ## Install
 
@@ -36,7 +38,8 @@ Other modes:
 
 ```bash
 uv run scripts/train.py --update-function wocar_dqn --total-steps 200000 --save woca_dqn.pt
-uv run scripts/train.py --update-function wocar_dqn --dqn-env intersection --agents 2 \
+uv run scripts/train.py --update-function mappo --env highway --total-steps 200000 --save mappo_highway.pt
+uv run scripts/train.py --update-function wocar_dqn --env intersection --agents 2 \
     --total-steps 200000 --save woca_dqn_intersection.pt
 uv run scripts/train.py --update-function wocar_ppo --env-id Hopper-v5 --total-steps 2000000 --save woca_ppo.pt
 ```

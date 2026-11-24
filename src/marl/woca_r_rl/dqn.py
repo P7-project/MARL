@@ -49,7 +49,7 @@ from argparse import Namespace
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
-from ..env import any_vehicle_crashed, build_actor_obs, flatten_obs, make_env
+from ..env import LEGACY_ENV_NAME, any_vehicle_crashed, build_actor_obs, flatten_obs, make_env
 
 from functools import partial
 
@@ -494,7 +494,7 @@ def train_dqn(args: Namespace, console: Console) -> None:
         torch.manual_seed(args.seed)
 
         n_agents: int = args.agents
-        env_name: str = getattr(args, "dqn_env", "highway")
+        env_name: str = getattr(args, "env", getattr(args, "dqn_env", LEGACY_ENV_NAME))
         env = make_env(n_agents, name=env_name)
 
         observation_space = env.observation_space
@@ -510,7 +510,13 @@ def train_dqn(args: Namespace, console: Console) -> None:
         n_actions: int = int(first_action_space.n)
         input_dim: int = obs_dim + n_agents
 
-        trainer: WocaRDQNTrainer = _build_trainer(obs_dim, n_agents, n_actions, args, device)
+        observation_bounds = (-1.0, 1.0)
+        if env_name == "simple_spread":
+            observation_bounds = (
+                float(first_observation_space.low.min()),
+                float(first_observation_space.high.max()),
+            )
+        trainer = _build_trainer(obs_dim, n_agents, n_actions, args, device, observation_bounds)
         buffer: ReplayBuffer = ReplayBuffer(args.buffer_size, input_dim, device)
         writer: SummaryWriter = SummaryWriter(f"{args.logdir}/{args.run_name}")
         renderer: AsyncPolicyRenderer | None = create_renderer(
@@ -609,7 +615,12 @@ def train_dqn(args: Namespace, console: Console) -> None:
 
 
 def _build_trainer(
-    obs_dim: int, n_agents: int, n_actions: int, args: Namespace, device: torch.device
+    obs_dim: int,
+    n_agents: int,
+    n_actions: int,
+    args: Namespace,
+    device: torch.device,
+    observation_bounds: tuple[float, float],
 ) -> WocaRDQNTrainer:
     input_dim: int = obs_dim + n_agents
     perturbation_scale: Tensor = torch.cat(
@@ -636,8 +647,8 @@ def _build_trainer(
         worst_epsilon_schedule=RampSchedule(0, ramp_steps, args.worst_eps_final),
         worst_kappa_schedule=RampSchedule(0, ramp_steps, 1.0 - args.worst_kappa_final),
         kappa_reg=args.kappa_reg,
-        observation_low=-1.0,
-        observation_high=1.0,
+        observation_low=observation_bounds[0],
+        observation_high=observation_bounds[1],
         perturbation_scale=perturbation_scale,
         adam_epsilon=args.adam_eps,
         use_huber_loss=not args.mse_loss,
@@ -703,7 +714,7 @@ class ReplayBuffer:
 
 
 class DqnPlayer(PolicyPlayer):
-    """Plays the greedy Q_r policy in a multi-agent driving environment."""
+    """Plays the greedy Q_r policy in a multi-agent team environment."""
 
     def __init__(
         self,
@@ -711,7 +722,7 @@ class DqnPlayer(PolicyPlayer):
         obs_dim: int,
         n_actions: int,
         hidden: int,
-        env_name: str = "highway",
+        env_name: str = LEGACY_ENV_NAME,
     ) -> None:
         self._n_agents: int = n_agents
         self._device: torch.device = torch.device("cpu")
@@ -739,7 +750,7 @@ class DqnPlayer(PolicyPlayer):
         episode_truncated = np.asarray(truncated, dtype=np.bool_)
         finished: bool = bool(agent_terminated.all()) or bool(episode_truncated.any())
         reward: float = float(np.asarray(_reward, dtype=np.float32).mean())
-        crashed: bool = any_vehicle_crashed(self._env)
+        crashed: bool | None = any_vehicle_crashed(self._env)
         return StepResult(finished=finished, reward=reward, crashed=crashed)
 
     def close(self) -> None:
@@ -756,7 +767,7 @@ def build_dqn_player(checkpoint: dict) -> PolicyPlayer:
         checkpoint["obs_dim"],
         checkpoint["n_actions"],
         checkpoint["hidden"],
-        env_name=checkpoint.get("dqn_env", "highway"),
+        env_name=checkpoint.get("dqn_env", LEGACY_ENV_NAME),
     )
     player.load_weights(checkpoint["robust_q"])
     return player

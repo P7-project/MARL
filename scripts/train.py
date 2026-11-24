@@ -9,6 +9,7 @@ from rich.console import Console
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from marl.env import DEFAULT_ENV_NAME, ENV_NAMES
 from marl.rendering import add_render_arguments
 from marl.training.trainer import train
 from marl.woca_r_rl.ppo import train_ppo
@@ -42,6 +43,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     add_render_arguments(parser)
     parser.add_argument("--agents", type=int, default=3)
+    parser.add_argument(
+        "--env",
+        "--dqn-env",  # older name, from when only WocaR-DQN could switch env
+        dest="env",
+        choices=ENV_NAMES,
+        default=DEFAULT_ENV_NAME,
+        help="Team environment for mappo and wocar_dqn (intersection: wocar_dqn only)",
+    )
     parser.add_argument("--total-steps", type=int, default=200_000)
     parser.add_argument("--rollout", type=int, default=512, help="joint env steps per update")
     parser.add_argument("--epochs", type=int, default=10)
@@ -74,12 +83,6 @@ def build_parser() -> argparse.ArgumentParser:
     # WocaR-DQN only (read by train_dqn)
     parser.add_argument("--adam-eps", type=float, default=1.5e-4) 
     parser.add_argument("--regularizer-margin", type=float, default=1)
-    parser.add_argument(
-        "--dqn-env",
-        choices=["highway", "intersection"],
-        default="highway",
-        help="Environment for WocaR-DQN",
-    )
     parser.add_argument("--hidden", type=int, default=64)  # width of the three Q-networks
     parser.add_argument("--target-update-every", type=int, default=2000)  # placeholder: official update_target_frame is in the base config
     parser.add_argument("--worst-ratio", type=float, default=0.1)  # official worst_ratio: weight of Q_phi in the target-action mix

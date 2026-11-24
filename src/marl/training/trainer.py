@@ -1,14 +1,16 @@
-"""Training loop for the current MAPPO highway baseline."""
+"""Training loop for the cooperative MAPPO baseline."""
 
+from argparse import Namespace
 from datetime import datetime
 
 import numpy as np
 import torch
+from gymnasium import spaces
 from rich.console import Console
 from rich.live import Live
 from torch.utils.tensorboard import SummaryWriter
 
-from ..env import build_actor_obs, flatten_obs, make_env
+from ..env import LEGACY_ENV_NAME, any_vehicle_crashed, build_actor_obs, flatten_obs, make_env
 from ..mappo import ppo_update
 from ..models import Actor, Critic
 from functools import partial
@@ -18,8 +20,10 @@ from ..rendering import AsyncPolicyRenderer, PolicyPlayer, StepResult, Weights, 
 
 console = Console()
 
+MAPPO_ENV_NAMES: tuple[str, ...] = ("simple_spread", "highway")
 
-def train(args):
+
+def train(args: Namespace) -> None:
     """Train the shared-policy MAPPO baseline using the provided CLI args."""
     with console.status(f"Setting up training with {args.agents} agents..."):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -27,9 +31,20 @@ def train(args):
         torch.manual_seed(args.seed)
 
         n_agents = args.agents
-        env = make_env(n_agents)
-        obs_dim = int(np.prod(env.observation_space.spaces[0].shape))
-        n_actions = int(env.action_space.spaces[0].n)
+        env_name: str = getattr(args, "env", LEGACY_ENV_NAME)
+        if env_name not in MAPPO_ENV_NAMES:
+            raise ValueError(f"MAPPO supports {MAPPO_ENV_NAMES}, got {env_name!r}")
+        env = make_env(n_agents, name=env_name)
+        observation_space = env.observation_space
+        action_space = env.action_space
+        assert isinstance(observation_space, spaces.Tuple)
+        assert isinstance(action_space, spaces.Tuple)
+        agent_observation_space = observation_space.spaces[0]
+        agent_action_space = action_space.spaces[0]
+        assert isinstance(agent_observation_space, spaces.Box)
+        assert isinstance(agent_action_space, spaces.Discrete)
+        obs_dim = int(np.prod(agent_observation_space.shape))
+        n_actions = int(agent_action_space.n)
 
         actor = Actor(obs_dim + n_agents, n_actions).to(device)
         critic = Critic(obs_dim * n_agents).to(device)
@@ -37,13 +52,13 @@ def train(args):
         opt_critic = torch.optim.Adam(critic.parameters(), lr=args.lr_critic, eps=1e-5)
 
         renderer: AsyncPolicyRenderer | None = create_renderer(
-            args, partial(MappoPlayer, n_agents, obs_dim, n_actions)
+            args, partial(MappoPlayer, n_agents, obs_dim, n_actions, env_name)
         )
 
         obs, _ = env.reset(seed=args.seed)
         obs = flatten_obs(obs)
         episode_return = 0.0
-        finished_returns = []
+        finished_returns: list[float] = []
         steps_done = 0
         iteration = 0
 
@@ -56,7 +71,9 @@ def train(args):
             f"Training ({steps_done}/{args.total_steps} steps, "
             f"{len(finished_returns)} episodes, {iteration} iterations)..."
         ):
-            buf = {key: [] for key in ("aobs", "state", "act", "logp", "rew", "done", "val")}
+            buf: dict[str, list[np.ndarray | float]] = {
+                key: [] for key in ("aobs", "state", "act", "logp", "rew", "done", "val")
+            }
 
             with Live(console=console, refresh_per_second=0.1) as rollout_live:
                 for rollout_step in range(args.rollout):
@@ -100,10 +117,9 @@ def train(args):
                     if done:
                         finished_returns.append(episode_return)
                         writer.add_scalar("episode/return", episode_return, steps_done)
-                        crashed = any(
-                            vehicle.crashed for vehicle in env.unwrapped.controlled_vehicles
-                        )
-                        writer.add_scalar("episode/crashed", float(crashed), steps_done)
+                        crashed = any_vehicle_crashed(env)
+                        if crashed is not None:
+                            writer.add_scalar("episode/crashed", float(crashed), steps_done)
                         episode_return = 0.0
                         next_obs, _ = env.reset()
                         next_obs = flatten_obs(next_obs)
@@ -144,6 +160,7 @@ def train(args):
                 "n_agents": n_agents,
                 "obs_dim": obs_dim,
                 "n_actions": n_actions,
+                "env": env_name,
             },
             args.save,
         )
@@ -156,11 +173,13 @@ def train(args):
 
 
 class MappoPlayer(PolicyPlayer):
-    """Plays the shared categorical actor greedily in the multi-agent highway env."""
+    """Plays the shared categorical actor greedily in the multi-agent team env."""
 
-    def __init__(self, n_agents: int, obs_dim: int, n_actions: int) -> None:
+    def __init__(
+        self, n_agents: int, obs_dim: int, n_actions: int, env_name: str = LEGACY_ENV_NAME
+    ) -> None:
         self._n_agents: int = n_agents
-        self._env = make_env(n_agents, render_mode="human")  # needs the make_env change
+        self._env = make_env(n_agents, render_mode="human", name=env_name)
         self._actor: Actor = Actor(obs_dim + n_agents, n_actions)
         self._actor.eval()
         self._obs: np.ndarray | None = None
@@ -178,9 +197,7 @@ class MappoPlayer(PolicyPlayer):
         next_obs, _reward, terminated, truncated, _info = self._env.step(actions)
         self._env.render()  # remove if make_env's human mode already draws inside step
         self._obs = flatten_obs(next_obs)
-        crashed: bool = any(
-            vehicle.crashed for vehicle in self._env.unwrapped.controlled_vehicles
-        )
+        crashed: bool | None = any_vehicle_crashed(self._env)
         return StepResult(finished=terminated or truncated, reward=float(_reward), crashed=crashed)
 
     def close(self) -> None:
@@ -196,6 +213,12 @@ class MappoPlayer(PolicyPlayer):
 
 
 def build_mappo_player(checkpoint: dict) -> PolicyPlayer:
-    player = MappoPlayer(checkpoint["n_agents"], checkpoint["obs_dim"], checkpoint["n_actions"])
+    """Load the actor and recreate the environment recorded in its checkpoint."""
+    player = MappoPlayer(
+        checkpoint["n_agents"],
+        checkpoint["obs_dim"],
+        checkpoint["n_actions"],
+        checkpoint.get("env", LEGACY_ENV_NAME),
+    )
     player.load_weights(checkpoint["actor"])
     return player
