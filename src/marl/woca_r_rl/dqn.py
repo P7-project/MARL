@@ -426,6 +426,7 @@ def train_dqn(args: Namespace, console: Console) -> None:
         n_agents: int = args.agents
         env_name: str = getattr(args, "dqn_env", "highway")
         env = make_env(n_agents, name=env_name)
+
         observation_space = env.observation_space
         action_space = env.action_space
         assert isinstance(observation_space, spaces.Tuple)
