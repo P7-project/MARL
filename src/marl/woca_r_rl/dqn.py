@@ -2,23 +2,15 @@
     WocaR-DQN (Algorithm 2 of Liang et al., NeurIPS 2022) for discrete actions.
 
     Networks:
-
-    Q_v plus a target Q_v', trained as a vanilla DQN.
     Q_r, the robust Q-network. It acts, and its bounds define A_adv_hat.
-    Q_phi, the worst-attack critic (outputs one value per action).
+    Q_r', a hard-copied target of Q_r.
+    Q_phi, the worst-attack critic (one value per action).
 
     Per update(batch, step):
-
-    + Update Q_v with the (double) DQN target, then soft-update Q_v'.
-    + Compute IBP output bounds of Q_r at s' with the current eps_t: Q_l(a), Q_u(a).
-    + A_adv_hat(s') = {a : Q_u(a) >= max_{a' != a} Q_l(a')}.
-    + a_hat = argmin_{a in A_adv_hat} Q_phi(s', a); y = r + gamma * Q_phi(s', a_hat).
-      Update phi with MSE.
-    + w(s) = normalized(max_a Q_v(s, a) - min_a Q_v(s, a)).
-    + Train Q_r on
-          y_r = r + gamma * max_a' [kappa_wst * Q_v'(s', a') + (1 - kappa_wst) * Q_phi(s', a')]
-          loss = (y_r - Q_r(s, a))^2 + kappa_reg * w(s) * L_reg(s)
-      with L_reg the SA-DQN regularizer on Q_r.
+    + Q_r target: a' = argmax_a [(1 - r) Q_r'(s', a) + r Q_phi(s', a)]; y_r = reward + gamma * Q_r'(s', a').
+    + Q_r loss: worst_kappa * TD + (1 - worst_kappa) * worst_case_loss + kappa_reg * L_reg.
+    + Every worst_rate-th update: A_adv_hat(s') from IBP bounds of Q_r; y = r + gamma * min over A_adv_hat of Q_phi(s', a'); Huber regression of Q_phi.
+    + Every target_update_every updates: copy Q_r into Q_r'.
 
     Math                                         Code
     (T_worst^pi Q)(s, a)                         _worst_attack_targets
@@ -37,10 +29,9 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from dataclasses import dataclass
 from math import exp
-from typing import Literal, NamedTuple
+from typing import Literal, NamedTuple, Optional
 
 from gymnasium import spaces
 from rich.console import Console
@@ -58,7 +49,7 @@ from argparse import Namespace
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
-from ..env import build_actor_obs, flatten_obs, make_env
+from ..env import any_vehicle_crashed, build_actor_obs, flatten_obs, make_env
 
 from functools import partial
 
@@ -73,39 +64,38 @@ class Batch(NamedTuple):
     terminated: Tensor  # [batch], float 0/1; must exclude time-limit truncation
 
 
-class TrainingMetrics(NamedTuple):
-    vanilla_loss: float
-    worst_attack_loss: float
-    robust_td_loss: float
-    regularizer_loss: float
-    epsilon: float
-    kappa_wst: float
-    mean_reachable_actions: float
-
-
 @dataclass(frozen=True)
 class WocaRDQNConfig:
-    """
-        Schedule example (paper, Atari, 6M steps): kappa_wst_schedule =
-        RampSchedule(start_step=2_000_000, ramp_steps=4_000_000, final_value=0.5, shape="exponential").
-        Rescale the steps to your training length (for example start at one third).
-    """
-
     num_actions: int
     discount_factor: float
-    target_update_coefficient: float
     learning_rate: float
-    epsilon_schedule: RampSchedule
-    kappa_wst_schedule: RampSchedule
+    target_update_every: int  # updates between hard copies Q_r -> target
+    worst_mix_ratio: float  # official worst_ratio: weight of Q_phi in the target-action mix
+    worst_update_every: int  # official worst_rate: Q_phi steps every N updates
+    reachable_epsilon: Optional[float]  # official 1e-7; None uses the scheduled epsilon
+    epsilon_schedule: RampSchedule  # radius for the regularizer
+    worst_epsilon_schedule: RampSchedule  # radius for the worst-case loss
+    worst_kappa_schedule: RampSchedule  # final_value = 1 - worst_kappa_end; TD weight = 1 - value
     kappa_reg: float
     observation_low: float
     observation_high: float
-    regularizer_margin: float = 0.0
-    use_double_dqn: bool = True
+    adam_epsilon: float = 1.5e-4
+    use_huber_loss: bool = True
+    regularizer_margin: float = 1.0  # official hinge_c
+    use_double_dqn: bool = False
     bound_method: str = "IBP"
-    # Per-entry multiplier on epsilon (same shape as one observation or broadcastable),
-    # for example 0 on highway-env's `presence` column. None means 1 everywhere.
-    perturbation_scale: Tensor | None = None
+    perturbation_scale: Optional[Tensor] = None
+
+
+class TrainingMetrics(NamedTuple):
+    worst_attack_loss: float
+    robust_td_loss: float
+    worst_case_loss: float
+    regularizer_loss: float
+    epsilon: float
+    worst_epsilon: float
+    worst_kappa: float
+    mean_reachable_actions: float
 
 
 class WocaRDQNTrainer:
@@ -128,20 +118,18 @@ class WocaRDQNTrainer:
 
     def __init__(
         self,
-        vanilla_q: nn.Module,
         robust_q: BoundedModule,
+        target_q: BoundedModule,
         worst_attack_q: nn.Module,
         config: WocaRDQNConfig,
     ) -> None:
-        self._vanilla_q = vanilla_q
-        self._target_vanilla_q = self._frozen_copy(vanilla_q)
-        # BoundedModule: the optimizer below must use *its* parameters.
         self._robust_q = robust_q
-        # Q in the definition: the worst-attack critic Q_phi.
+        self._target_q = target_q
         self._worst_attack_q = worst_attack_q
-        # config.discount_factor is gamma in the definition.
         self._config = config
-        # Bounds of Q_r over B_eps(s'); these encode both pi and B_eps.
+        self._update_count: int = 0
+        self._last_worst_attack_loss: float = float("nan")
+        self._last_mean_reachable: float = float("nan")
         self._bounder = RobustQBounder(
             robust_q,
             config.observation_low,
@@ -149,12 +137,141 @@ class WocaRDQNTrainer:
             config.perturbation_scale,
             config.bound_method,
         )
-        # Provides A_adv_hat(s', pi) from those bounds.
         self._estimator = ReachableActionEstimator()
         self._regularizer = SARegularizer(config.regularizer_margin)
-        self._vanilla_optimizer = Adam(vanilla_q.parameters(), lr=config.learning_rate)
-        self._robust_optimizer = Adam(robust_q.parameters(), lr=config.learning_rate)
-        self._worst_attack_optimizer = Adam(worst_attack_q.parameters(), lr=config.learning_rate)
+        self._robust_optimizer = Adam(
+            robust_q.parameters(), lr=config.learning_rate, eps=config.adam_epsilon
+        )
+        self._worst_attack_optimizer = Adam(
+            worst_attack_q.parameters(), lr=config.learning_rate, eps=config.adam_epsilon
+        )
+        for parameter in target_q.parameters():
+            parameter.requires_grad_(False)
+        self._sync_target()
+
+    # select_action and robust_q_state_dict stay as they are.
+
+    def update(self, batch: Batch, step: int) -> TrainingMetrics:
+        self._update_count += 1
+        epsilon = self._config.epsilon_schedule.value(step)
+        worst_epsilon = self._config.worst_epsilon_schedule.value(step)
+        worst_kappa = 1.0 - self._config.worst_kappa_schedule.value(step)
+
+        # Q_r first, so its target uses Q_phi from before this step, as in the official code.
+        td_loss, worst_case_loss, regularizer_loss = self._update_robust_q(
+            batch, epsilon, worst_epsilon, worst_kappa
+        )
+        worst_attack_loss, mean_reachable = self._maybe_update_worst_attack_critic(batch, epsilon)
+        self._maybe_sync_target()
+
+        return TrainingMetrics(
+            worst_attack_loss=worst_attack_loss,
+            robust_td_loss=td_loss,
+            worst_case_loss=worst_case_loss,
+            regularizer_loss=regularizer_loss,
+            epsilon=epsilon,
+            worst_epsilon=worst_epsilon,
+            worst_kappa=worst_kappa,
+            mean_reachable_actions=mean_reachable,
+        )
+
+
+    @torch.no_grad()
+    def mean_reachable_actions_at(self, batch: Batch, radius: float) -> float:
+        bounds: QValueBounds = self._bounder.bounds(batch.next_states, radius)
+        reachable: Tensor = self._estimator.mask(bounds)
+        return float(reachable.float().sum(dim=1).mean())
+
+    # ----------------------------------------------------------------- Q_r ---
+
+    def _update_robust_q(
+        self, batch: Batch, epsilon: float, worst_epsilon: float, worst_kappa: float
+    ) -> tuple[float, float, float]:
+        targets = self._robust_targets(batch)
+        clean_q_values = self._robust_q(batch.states)
+        td_loss = self._td_loss(self._gather(clean_q_values, batch.actions), targets)
+        worst_case_loss = self._worst_case_loss(batch, clean_q_values, targets, worst_epsilon)
+        regularizer_loss = self._regularizer_loss(batch.states, clean_q_values, epsilon)
+        loss = (
+            worst_kappa * td_loss
+            + (1.0 - worst_kappa) * worst_case_loss
+            + self._config.kappa_reg * regularizer_loss
+        )
+        self._step(self._robust_optimizer, loss)
+        return float(td_loss.detach()), float(worst_case_loss.detach()), float(regularizer_loss.detach())
+
+    @torch.no_grad()
+    def _robust_targets(self, batch: Batch) -> Tensor:
+        """Pick a' = argmax of the mix, then bootstrap from the natural target Q at a' (not from the mix)."""
+        target_values = self._target_q(batch.next_states)
+        worst_values = self._worst_attack_q(batch.next_states)
+        ratio = self._config.worst_mix_ratio
+        mixed_values = (1.0 - ratio) * target_values + ratio * worst_values
+        best_actions = mixed_values.argmax(dim=1, keepdim=True)
+        return self._bootstrap(batch, target_values.gather(1, best_actions).squeeze(1))
+
+    def _worst_case_loss(
+        self, batch: Batch, clean_q_values: Tensor, targets: Tensor, epsilon: float
+    ) -> Tensor:
+        """Taken action: bounds vs the TD target. Other actions: bounds vs their current Q."""
+        bounds = self._bounder.bounds(batch.states, epsilon)
+        taken = nn.functional.one_hot(batch.actions.long(), num_classes=self._config.num_actions).bool()
+        reference = torch.where(taken, targets.unsqueeze(1), clean_q_values)
+        deviation = torch.maximum(
+            (bounds.upper - reference).abs(), (bounds.lower - reference).abs()
+        )
+        return torch.minimum(deviation.pow(2), deviation).sum(dim=1).mean()
+
+    def _regularizer_loss(self, states: Tensor, clean_q_values: Tensor, epsilon: float) -> Tensor:
+        best_actions: Tensor = clean_q_values.detach().argmax(dim=1)
+        margin_lower: Tensor = self._bounder.margin_lower_bounds(
+            states, best_actions, self._config.num_actions, epsilon
+        )  # [batch, A-1]
+        per_state_loss: Tensor = self._regularizer.per_state_loss(margin_lower)
+        weights: Tensor = self._state_importance(clean_q_values)
+        return (weights * per_state_loss).mean()
+
+    @staticmethod
+    @torch.no_grad()
+    def _state_importance(clean_q_values: Tensor) -> Tensor:
+        """
+            Math: w(s) = (max_a Q(s, a) - min_a Q(s, a)) / max over the batch,
+            the paper's state importance weight (Algorithm 2, line 16).
+        """
+        spread: Tensor = clean_q_values.max(dim=1).values - clean_q_values.min(dim=1).values
+        return spread / spread.max().clamp(min=1e-8)
+
+    # --------------------------------------------------------------- Q_phi ---
+
+    def _maybe_update_worst_attack_critic(self, batch: Batch, epsilon: float) -> tuple[float, float]:
+        if self._update_count % self._config.worst_update_every != 0:
+            return self._last_worst_attack_loss, self._last_mean_reachable
+        reachable_epsilon = self._config.reachable_epsilon
+        radius = epsilon if reachable_epsilon is None else reachable_epsilon
+        targets, reachable = self._worst_attack_targets(batch, radius)
+        predictions = self._gather(self._worst_attack_q(batch.states), batch.actions)
+        loss = self._td_loss(predictions, targets)
+        self._step(self._worst_attack_optimizer, loss)
+        self._last_worst_attack_loss = float(loss.detach())
+        self._last_mean_reachable = float(reachable.float().sum(dim=1).mean())
+        return self._last_worst_attack_loss, self._last_mean_reachable
+
+    # ------------------------------------------------------------- target ---
+
+    def _maybe_sync_target(self) -> None:
+        if self._update_count % self._config.target_update_every == 0:
+            self._sync_target()
+
+    @torch.no_grad()
+    def _sync_target(self) -> None:
+        self._target_q.load_state_dict(self._robust_q.state_dict())
+
+
+    def _td_loss(self, predictions: Tensor, targets: Tensor) -> Tensor:
+        if self._config.use_huber_loss:
+            return nn.functional.smooth_l1_loss(predictions, targets)
+        return nn.functional.mse_loss(predictions, targets)
+
 
     @torch.no_grad()
     def select_action(self, state: Tensor, exploration_probability: float) -> int:
@@ -168,83 +285,13 @@ class WocaRDQNTrainer:
         q_values = self._robust_q(state.unsqueeze(0))
         return int(q_values.argmax(dim=1))
 
-    def update(self, batch: Batch, step: int) -> TrainingMetrics:
-        epsilon = self._config.epsilon_schedule.value(step)
-        kappa_wst = self._config.kappa_wst_schedule.value(step)
-
-        vanilla_loss = self._update_vanilla_q(batch)
-        self._soft_update_target()
-        worst_attack_loss, mean_reachable = self._update_worst_attack_critic(batch, epsilon)
-        robust_td_loss, regularizer_loss = self._update_robust_q(batch, epsilon, kappa_wst)
-
-        return TrainingMetrics(
-            vanilla_loss=vanilla_loss,
-            worst_attack_loss=worst_attack_loss,
-            robust_td_loss=robust_td_loss,
-            regularizer_loss=regularizer_loss,
-            epsilon=epsilon,
-            kappa_wst=kappa_wst,
-            mean_reachable_actions=mean_reachable,
-        )
 
     def robust_q_state_dict(self) -> dict[str, Tensor]:
         return self._robust_q.state_dict()
 
-    def load_robust_q_state_dict(self, state_dict: dict[str, Tensor]) -> None:
-        # Load the previously trained weights into the robust Q-network.
-        self._robust_q.load_state_dict(state_dict)
-
-        # Set the network to evaluation mode (no training updates).
-        self._robust_q.eval()
-
-    # ----------------------------------------------------------------- Q_v ---
-
-    def _update_vanilla_q(self, batch: Batch) -> float:
-        targets = self._vanilla_targets(batch)
-        predictions = self._gather(self._vanilla_q(batch.states), batch.actions)
-        loss = nn.functional.mse_loss(predictions, targets)
-        self._step(self._vanilla_optimizer, loss)
-        return float(loss.detach())
 
     @torch.no_grad()
-    def _vanilla_targets(self, batch: Batch) -> Tensor:
-        """
-            Math: r + gamma * Q_v'(s', argmax_a' Q_v(s', a')) (double DQN) or max_a' Q_v'(s', a').
-        """
-        target_q_values = self._target_vanilla_q(batch.next_states)
-        if self._config.use_double_dqn:
-            best_actions = self._vanilla_q(batch.next_states).argmax(dim=1, keepdim=True)
-            next_values = target_q_values.gather(1, best_actions).squeeze(1)
-        else:
-            next_values = target_q_values.max(dim=1).values
-        return self._bootstrap(batch, next_values)
-
-    @torch.no_grad()
-    def _soft_update_target(self) -> None:
-        """
-            Math: theta' <- tau * theta + (1 - tau) * theta'.
-        """
-        tau = self._config.target_update_coefficient
-        for target_parameter, online_parameter in zip(
-            self._target_vanilla_q.parameters(), self._vanilla_q.parameters()
-        ):
-            target_parameter.mul_(1.0 - tau).add_(online_parameter, alpha=tau)
-
-    # --------------------------------------------------------------- Q_phi ---
-
-    def _update_worst_attack_critic(self, batch: Batch, epsilon: float) -> tuple[float, float]:
-        """
-            Math: MSE regression of Q_phi onto (T_worst^pi Q_phi)(s, a) for a batch of (s, a, r, s').
-        """
-        targets, reachable = self._worst_attack_targets(batch, epsilon)
-        predictions = self._gather(self._worst_attack_q(batch.states), batch.actions)
-        loss = nn.functional.mse_loss(predictions, targets)
-        self._step(self._worst_attack_optimizer, loss)
-        mean_reachable = float(reachable.float().sum(dim=1).mean())
-        return float(loss.detach()), mean_reachable
-
-    @torch.no_grad()
-    def _worst_attack_targets(self, batch: Batch, epsilon: float) -> tuple[Tensor, Tensor]:
+    def _worst_attack_targets(self, batch: Batch, radius: float) -> tuple[Tensor, Tensor]:
         """
             Single-sample estimate of (T_worst^pi Q_phi)(s, a) for a batch of (s, a, r, s').
 
@@ -258,7 +305,7 @@ class WocaRDQNTrainer:
             and must exclude time-limit truncation, which does not end the MDP. MDP time limit truncation refers to the practice of ending a reinforcement learning episode after a fixed number of timesteps, which breaks the standard Markov Decision Process (MDP) framework if not handled correctly.
             - Uses Q_phi itself (no target network), as in Algorithm 2.
         """
-        bounds = self._bounder.bounds(batch.next_states, epsilon)
+        bounds = self._bounder.bounds(batch.next_states, radius)
         reachable = self._estimator.mask(bounds)
         q_values = self._worst_attack_q(batch.next_states)
         next_values = self._worst_case_values(q_values, reachable)
@@ -270,60 +317,7 @@ class WocaRDQNTrainer:
         """
         unreachable = torch.logical_not(reachable)
         return q_values.masked_fill(unreachable, float("inf")).min(dim=1).values
-
-    # ----------------------------------------------------------------- Q_r ---
-
-    def _update_robust_q(
-        self,
-        batch: Batch,
-        epsilon: float,
-        kappa_wst: float,
-    ) -> tuple[float, float]:
-        """
-            y_r = r + gamma * max_a' [kappa * Q_v'(s', a') + (1 - kappa) * Q_phi(s', a')]
-            loss = (Q_r(s, a) - y_r)^2 + kappa_reg * means_s [ w(s) * L_reg(s) ]. 
-        """
-        targets = self._robust_targets(batch, kappa_wst)
-        clean_q_values = self._robust_q(batch.states)
-        td_loss = nn.functional.mse_loss(self._gather(clean_q_values, batch.actions), targets)
-        regularizer_loss = self._weighted_regularizer(batch.states, clean_q_values, epsilon)
-        loss = td_loss + self._config.kappa_reg * regularizer_loss
-        self._step(self._robust_optimizer, loss)
-        return float(td_loss.detach()), float(regularizer_loss.detach())
-
-    @torch.no_grad()
-    def _robust_targets(self, batch: Batch, kappa_wst: float) -> Tensor:
-        """
-            Math: y_r = r + gamma * max_a' [kappa * Q_v'(s', a') + (1 - kappa) * Q_phi(s', a')].
-        """
-        vanilla_values = self._target_vanilla_q(batch.next_states)
-        worst_attack_values = self._worst_attack_q(batch.next_states)
-        mixed_values = kappa_wst * vanilla_values + (1.0 - kappa_wst) * worst_attack_values
-        return self._bootstrap(batch, mixed_values.max(dim=1).values) 
-    
-    def _weighted_regularizer(
-        self,
-        states: Tensor,
-        clean_q_values: Tensor,
-        epsilon: float,
-    ) -> Tensor:
-        """
-            Math: mean_s [ w(s) * L_reg(s) ]. Gradients flow into Q_r through the bounds.
-        """
-        bounds = self._bounder.bounds(states, epsilon)
-        per_state_loss = self._regularizer.per_state_loss(bounds, clean_q_values)
-        weights = self._state_importance(states)
-        return (weights * per_state_loss).mean()
-
-    @torch.no_grad()
-    def _state_importance(self, states: Tensor) -> Tensor:
-        """
-            Math: w(s) = max_a Q_v(s, a) - min_a Q_v(s, a), divided by its batch maximum.
-        """
-        q_values = self._vanilla_q(states)
-        spread = q_values.max(dim=1).values - q_values.min(dim=1).values
-        return spread / spread.max().clamp(min=1e-8)
-
+   
     # ------------------------------------------------------------- helpers ---
 
     def _bootstrap(self, batch: Batch, next_values: Tensor) -> Tensor:
@@ -343,12 +337,6 @@ class WocaRDQNTrainer:
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-
-    def _frozen_copy(self, network: nn.Module) -> nn.Module:
-        copy = deepcopy(network)
-        for parameter in copy.parameters():
-            parameter.requires_grad_(False)
-        return copy
 
 
 @dataclass(frozen=True)
@@ -407,15 +395,33 @@ class RobustQBounder:
         self._method = method
 
     def bounds(self, states: Tensor, epsilon: float) -> QValueBounds:
+        lower, upper = self._bounded_q_network.compute_bounds(
+            x=(self._bounded_input(states, epsilon),), method=self._method
+        )
+        return QValueBounds(lower, upper)
+
+    def margin_lower_bounds(
+        self, states: Tensor, best_actions: Tensor, num_actions: int, epsilon: float
+    ) -> Tensor:
+        specification: Tensor = self._margin_specification(best_actions, num_actions)
+        lower, _ = self._bounded_q_network.compute_bounds(
+            x=(self._bounded_input(states, epsilon),), C=specification, method=self._method
+        )
+        return lower
+
+    def _bounded_input(self, states: Tensor, epsilon: float) -> BoundedTensor:
         radius = self._radius(states, epsilon)
         lower_corner = (states - radius).clamp(self._observation_low, self._observation_high)
         upper_corner = (states + radius).clamp(self._observation_low, self._observation_high)
-        perturbation = PerturbationLpNorm(x_L=lower_corner, x_U=upper_corner)
-        bounded_states = BoundedTensor(states, perturbation)
-        lower, upper = self._bounded_q_network.compute_bounds(
-            x=(bounded_states,), method=self._method
-        )
-        return QValueBounds(lower, upper)
+        return BoundedTensor(states, PerturbationLpNorm(x_L=lower_corner, x_U=upper_corner))
+
+    def _margin_specification(self, best_actions: Tensor, num_actions: int) -> Tensor:
+        """[batch, A-1, A]: one row per a != a*, computing Q(a*) - Q(a)."""
+        identity: Tensor = torch.eye(num_actions, device=best_actions.device)
+        rows: Tensor = identity[best_actions].unsqueeze(1) - identity.unsqueeze(0)
+        is_best: Tensor = nn.functional.one_hot(best_actions, num_actions).bool()
+        others: Tensor = torch.logical_not(is_best)
+        return rows[others].view(best_actions.shape[0], num_actions - 1, num_actions)
 
     def _radius(self, states: Tensor, epsilon: float) -> Tensor:
         if self._perturbation_scale is None:
@@ -465,26 +471,24 @@ class SARegularizer:
     """
         SA-DQN regularizer on Q_r.
 
-        Math: L_reg(s) = max{ max_{a != a*} Q_u(s, a) - Q_l(s, a*), -c },  a* = argmax_a Q_r(s, a).
+        Math: L_reg(s) = max{ -min_{a != a*} LB[Q(a*) - Q(a)], -c },  a* = argmax_a Q_r(s, a).
         Zero gradient once the clean action is certified to stay best by margin c.
     """
 
     def __init__(self, margin: float) -> None:
         self._margin = margin
 
-    def per_state_loss(self, bounds: QValueBounds, clean_q_values: Tensor) -> Tensor:
-        """
-            [batch]: regularizer value per state.
-        """
-        best_actions = clean_q_values.detach().argmax(dim=1)
-        lower_of_best = bounds.lower.gather(1, best_actions.unsqueeze(1)).squeeze(1)
-        best_mask = nn.functional.one_hot(best_actions, num_classes=bounds.upper.shape[1]).bool()
-        upper_of_others = bounds.upper.masked_fill(best_mask, float("-inf")).max(dim=1).values
-        return torch.clamp(upper_of_others - lower_of_best, min=-self._margin)
+    def per_state_loss(self, margin_lower_bounds: Tensor) -> Tensor:
+        """max(-min_a LB[Q(a*) - Q(a)], -c), the official hinge."""
+        worst_margin: Tensor = margin_lower_bounds.min(dim=1).values
+        return torch.clamp(-worst_margin, min=-self._margin)
 
 
 def train_dqn(args: Namespace, console: Console) -> None:
     with console.status("[bold green]Setting up WocaR-DQN..."):
+        if args.total_steps <= args.warmup:
+            raise ValueError(f"--total_steps ({args.total_steps}) must be >= --warmup ({args.warmup})")
+
         device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
@@ -492,6 +496,7 @@ def train_dqn(args: Namespace, console: Console) -> None:
         n_agents: int = args.agents
         env_name: str = getattr(args, "dqn_env", "highway")
         env = make_env(n_agents, name=env_name)
+
         observation_space = env.observation_space
         action_space = env.action_space
         assert isinstance(observation_space, spaces.Tuple)
@@ -566,14 +571,22 @@ def train_dqn(args: Namespace, console: Console) -> None:
             obs = next_obs
 
             if len(buffer) >= args.warmup:
-                metrics = trainer.update(buffer.sample(args.batch_size), step)  # global env step drives eps_t, kappa_wst
+                batch: Batch = buffer.sample(args.batch_size)
+                metrics = trainer.update(batch, step)  # global env step drives eps_t, kappa_wst
                 if step % 100 == 0:
                     for name, value in metrics._asdict().items():
-                        writer.add_scalar(f"woca/{name}", value, step)
+                      if np.isfinite(value):
+                          writer.add_scalar(f"woca/{name}", value, step)
+                    writer.add_scalar(
+                        "woca/reachable_at_eps_final",
+                        trainer.mean_reachable_actions_at(batch, args.eps_final),
+                        step,
+                    )
 
             if renderer is not None:
                 renderer.publish_if_due(step, trainer.robust_q_state_dict)
 
+    with console.status("[bold green]Saving WocaR-DQN..."):
         if args.save:
             torch.save(
                 {
@@ -587,47 +600,50 @@ def train_dqn(args: Namespace, console: Console) -> None:
                 },
                 args.save,
             )
-    if renderer is not None:
-        renderer.close()
-    writer.close()
-    env.close()
+
+    with console.status("[bold green]Cleaning up..."):
+        if renderer is not None:
+            renderer.close()
+        writer.close()
+        env.close()
 
 
 def _build_trainer(
     obs_dim: int, n_agents: int, n_actions: int, args: Namespace, device: torch.device
 ) -> WocaRDQNTrainer:
     input_dim: int = obs_dim + n_agents
-    vanilla_q: nn.Module = mlp(input_dim, n_actions, args.hidden, out_gain=1.0).to(device)
-    worst_attack_q: nn.Module = mlp(input_dim, n_actions, args.hidden, out_gain=1.0).to(device)
-    robust_q: BoundedModule = _build_robust_q(input_dim, n_actions, args.hidden, device)
-    # Perturb the observation part, never the one-hot agent id.
     perturbation_scale: Tensor = torch.cat(
         [torch.ones(obs_dim), torch.zeros(n_agents)]
     ).to(device)
+    robust_q: BoundedModule = _build_robust_q(input_dim, n_actions, args.hidden, device)
+    target_q: BoundedModule = _build_robust_q(input_dim, n_actions, args.hidden, device)
+    worst_attack_q: nn.Module = mlp(input_dim, n_actions, args.hidden, out_gain=1.0).to(device)
+    ramp_steps: int = args.worst_schedule if args.worst_schedule > 0 else args.total_steps # official: max(num_frames, worst_schedule)
 
     config: WocaRDQNConfig = WocaRDQNConfig(
         num_actions=n_actions,
         discount_factor=args.gamma,
-        target_update_coefficient=args.tau,
         learning_rate=args.lr,
-        # (our choice) ramp windows rescaled from the paper's 6M-step Atari schedule.
+        target_update_every=args.target_update_every,
+        worst_mix_ratio=args.worst_ratio,
+        worst_update_every=args.worst_rate,
+        reachable_epsilon=None if args.reachable_eps_scheduled else args.reachable_eps,
         epsilon_schedule=RampSchedule(
             start_step=args.warmup,
             ramp_steps=args.total_steps - args.warmup,
             final_value=args.eps_final,
         ),
-        kappa_wst_schedule=RampSchedule(
-            start_step=args.total_steps // 3,
-            ramp_steps=args.total_steps - args.total_steps // 3,
-            final_value=0.5,
-            shape="exponential",
-        ),
+        worst_epsilon_schedule=RampSchedule(0, ramp_steps, args.worst_eps_final),
+        worst_kappa_schedule=RampSchedule(0, ramp_steps, 1.0 - args.worst_kappa_final),
         kappa_reg=args.kappa_reg,
-        observation_low=-1.0,  # verify against your env's observation config
+        observation_low=-1.0,
         observation_high=1.0,
         perturbation_scale=perturbation_scale,
+        adam_epsilon=args.adam_eps,
+        use_huber_loss=not args.mse_loss,
+        regularizer_margin=args.regularizer_margin,
     )
-    return WocaRDQNTrainer(vanilla_q, robust_q, worst_attack_q, config)
+    return WocaRDQNTrainer(robust_q, target_q, worst_attack_q, config)
 
 def _build_robust_q(input_dim: int, n_actions: int, hidden: int, device: torch.device) -> BoundedModule:
     return BoundedModule(
@@ -723,14 +739,7 @@ class DqnPlayer(PolicyPlayer):
         episode_truncated = np.asarray(truncated, dtype=np.bool_)
         finished: bool = bool(agent_terminated.all()) or bool(episode_truncated.any())
         reward: float = float(np.asarray(_reward, dtype=np.float32).mean())
-        crash_value = None
-        if isinstance(_info, dict):
-            crash_value = _info.get("crashed", _info.get("agents_crashed"))
-        crashed: bool | None = (
-            None
-            if crash_value is None
-            else bool(np.asarray(crash_value, dtype=np.bool_).any())
-        )
+        crashed: bool = any_vehicle_crashed(self._env)
         return StepResult(finished=finished, reward=reward, crashed=crashed)
 
     def close(self) -> None:
