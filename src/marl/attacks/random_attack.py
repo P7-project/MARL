@@ -66,7 +66,7 @@ class RandomObservationAttacker:
 
 
 
-    def _select_agents(self, n_agents) -> List[int]:
+    def _select_agents(self, n_agents: int) -> List[int]:
         """Select the agents to attack based on the configured mode."""
 
         if self.target_mode == FIXED_TARGET:
@@ -92,7 +92,7 @@ class RandomObservationAttacker:
 
         return agents
 
-    def attack(self, observations) -> np.ndarray:
+    def attack(self, observations: np.ndarray) -> np.ndarray:
         """
           Apply random noise to selected agents with a given probability.
 

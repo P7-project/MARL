@@ -23,15 +23,21 @@ from marl.woca_r_rl.dqn import (
 
 from rich.progress import Progress
 
-from marl.attacks.random_attack import RandomObservationAttacker
+from marl.attacks.observation_attacks import (
+    RandomObservationAttacker,
+    PGDObservationAttacker,
+)
 
 class EvaluationMode(Enum):
     clean = "clean"
-    attacked = "attacked"
+    random = "random"
+    pgd = "pgd"
 
 class TargetMode(Enum):
     fixed = "fixed"
     random = "random"
+
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -61,6 +67,10 @@ def parse_args():
     parser.add_argument("--target-mode", choices=[mode.value for mode in TargetMode], default=TargetMode.fixed.value)
     parser.add_argument("--target-agents",type=int,nargs="+",help="Agent indices to attack in fixed targeting mode.")
 
+    parser.add_argument("--pgd-iters", type=int, default=10)
+    parser.add_argument("--pgd-step-size", type=float, default=None)
+    parser.add_argument("--pgd-random-start",action=argparse.BooleanOptionalAction,default=True,)
+
     # Logging configuration
     parser.add_argument("--logdir", type=str, default="runs")
     parser.add_argument("--run-name",type=str,default=datetime.now().strftime("%Y%m%d-%H%M%S"))
@@ -87,10 +97,18 @@ def parse_args():
         if any(agent < 0 or agent >= args.agents for agent in args.target_agents):
             parser.error("Target agent indices must be between 0 and agents - 1.")
 
-    if args.mode == EvaluationMode.attacked.value and args.target_mode == TargetMode.fixed.value:
-        if args.target_agents is None:
-            parser.error("--target-agents is required when using fixed targeting.")
+    if (
+        args.mode != EvaluationMode.clean.value
+        and args.target_mode == TargetMode.fixed.value
+        and args.target_agents is None
+    ):
+        parser.error("--target-agents is required when using fixed targeting.")
 
+    if args.pgd_iters < 1:
+        parser.error("--pgd-iters must be at least 1.")
+
+    if args.pgd_step_size is not None and args.pgd_step_size <= 0:
+        parser.error("--pgd-step-size must be positive.")
 
     if args.render_agents < 1:
         parser.error("--render-agents must be at least 1.")
@@ -104,7 +122,7 @@ def parse_args():
 def load_model(args, device):
 
     render_mode = "human" if args.render else None
-    env = env = make_env(
+    env = make_env(
         args.agents,
         render_mode=render_mode,
         render_agents=args.render_agents,
@@ -140,13 +158,26 @@ def load_model(args, device):
 def evaluate(args, trainer, env, device):
     attacker = None
 
-    if args.mode == EvaluationMode.attacked.value:
-        attacker = RandomObservationAttacker(
-            epsilon=args.epsilon,
-            attack_probability=args.attack_probability,
-            target_agents=args.target_agents,
-            target_mode=args.target_mode,
-            seed=args.seed
+
+    common_args = {
+        "epsilon": args.epsilon,
+        "attack_probability": args.attack_probability,
+        "target_agents": args.target_agents,
+        "target_mode": args.target_mode,
+        "seed": args.seed,
+    }
+
+    if args.mode == EvaluationMode.random.value:
+        attacker = RandomObservationAttacker(**common_args)
+
+    elif args.mode == EvaluationMode.pgd.value:
+        attacker = PGDObservationAttacker(
+            model=trainer._robust_q,
+            n_agents=args.agents,
+            niters=args.pgd_iters,
+            step_size=args.pgd_step_size,
+            random_start=args.pgd_random_start,
+            **common_args,
         )
 
     episode_rewards = []
@@ -217,7 +248,7 @@ def main():
         tag = EvaluationMode.clean.value
     else:
         tag = (
-            f"attacked/{args.target_mode}/"
+            f"{args.mode}/{args.target_mode}/"
             f"epsilon_{args.epsilon}/"
             f"probability_{args.attack_probability}"
         )
@@ -232,7 +263,7 @@ def main():
 
     print(f"Mode: {args.mode}")
 
-    if args.mode == EvaluationMode.attacked.value:
+    if args.mode in [EvaluationMode.random.value,EvaluationMode.pgd.value]:
         print(f"Target mode: {args.target_mode}")
         print(f"Epsilon: {args.epsilon}")
         print(f"Attack probability: {args.attack_probability}")
