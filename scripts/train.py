@@ -1,5 +1,4 @@
 import argparse
-import re
 import sys
 from datetime import datetime
 from enum import Enum
@@ -15,8 +14,6 @@ from marl.reward_funcs import REWARD_FUNCTIONS
 from marl.training.trainer import train
 from marl.woca_r_rl.ppo import train_ppo
 from marl.woca_r_rl.dqn import train_dqn
-
-DEFAULT_SAVE_STEM: str = "default_save_name"
 
 console = Console()
 
@@ -115,31 +112,30 @@ def build_parser() -> ConfigArgumentParser:
 
 
 def resolve_save_path(args: argparse.Namespace) -> None:
+    """Set args.save to a reserved file in the run folder when --save was not given."""
     if args.save is None:
-        args.save = reserve_default_save_path()
+        args.save = reserve_default_save_path(Path(args.logdir) / args.run_name)
 
 
-def reserve_default_save_path(save_directory: Path = Path(".")) -> str:
-    next_number: int = _highest_save_number(save_directory) + 1
+def reserve_default_save_path(save_directory: Path) -> str:
+    """Create and return the first free model.pt, model.2.pt, ... in save_directory.
+
+    The file is created with exclusive create, so two runs started at the same time
+    never get the same path.
+    """
+    save_directory.mkdir(parents=True, exist_ok=True)
+    number: int = 1
     while True:
-        path: Path = save_directory / f"{DEFAULT_SAVE_STEM}.{next_number}.pt"
+        name: str = "model.pt" if number == 1 else f"model.{number}.pt"
+        path: Path = save_directory / name
         try:
             with path.open("x"):
                 pass
         except FileExistsError:
-            next_number += 1
+            number += 1
             continue
         return str(path)
 
-
-def _highest_save_number(save_directory: Path) -> int:
-    pattern: re.Pattern[str] = re.compile(rf"^{re.escape(DEFAULT_SAVE_STEM)}\.(\d+)\.pt$")
-    numbers: list[int] = []
-    for path in save_directory.glob(f"{DEFAULT_SAVE_STEM}.*.pt"):
-        match: re.Match[str] | None = pattern.match(path.name)
-        if match is not None:
-            numbers.append(int(match.group(1)))
-    return max(numbers, default=0)
 
 def build_default_run_name(update_function: str) -> str:
     timestamp: str = datetime.now().strftime("%d_%H-%M-%S")

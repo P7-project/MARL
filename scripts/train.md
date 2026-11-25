@@ -59,7 +59,7 @@ An argument a mode does not read is accepted and ignored.
 | `--total-steps` | 200000 | Total environment steps. |
 | `--seed` | 0 | Seeds numpy and torch. |
 | `--gamma` | 0.99 | Discount factor. |
-| `--save` | `default_save_name.N.pt` | Checkpoint path, relative to the current working directory. `N` is the next unused number, picked at launch. Pass a name per run to avoid two simultaneous runs choosing the same file. |
+| `--save` | `<logdir>/<run-name>/model.pt` | Checkpoint path, relative to the current working directory. By default the file is reserved at launch in the run folder (`model.2.pt`, `model.3.pt`, ... if `model.pt` is taken), so simultaneous runs never share a file. Only set `--save` (CLI or config) when you want a fixed path; runs with the same path overwrite each other. |
 | `--logdir` | `runs` | TensorBoard root. Logs go to `<logdir>/<run-name>`. |
 | `--run-name` | timestamp | Sub-directory name inside `--logdir`. |
 | `--config` | none | JSON file with argument values; flags on the command line override it. See `configs/README.md`. |
