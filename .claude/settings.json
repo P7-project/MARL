@@ -4,5 +4,17 @@
       "Bash(git push *)",
       "Bash(gh pr *)"
     ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Caveman mode is on by default in this project: invoke the caveman:caveman skill now and answer in caveman mode until the user asks for normal answers.'"
+          }
+        ]
+      }
+    ]
   }
 }
