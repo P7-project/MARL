@@ -1,3 +1,4 @@
+from dataclasses import replace
 from typing import Literal
 
 import pytest
@@ -381,6 +382,68 @@ def test_terminal_transitions_ignore_every_next_state_value() -> None:
     assert metrics.worst_attack_loss == pytest.approx(float(expected_worst_attack), abs=TOLERANCE)
 
 
+def test_state_importance_uses_the_vanilla_network() -> None:
+    """
+        Linear networks without bias on one-hot states A = e_0 and B = e_1.
+        Q_v(A) = [3, 1, 0] (spread 3), Q_v(B) = [1, 1, 0] (spread 1): w = [1, 1/3].
+        Q_r(A) = [1, 0, 0] (spread 1), Q_r(B) = [5, 0, 0] (spread 5) would give w = [0.2, 1].
+    """
+    states = torch.eye(2, STATE_DIM)
+    vanilla_q = _linear_network([[3.0, 1.0, 0.0], [1.0, 1.0, 0.0]])
+    robust_q = _bound(_linear_network([[1.0, 0.0, 0.0], [5.0, 0.0, 0.0]]), states)
+    worst_attack_q = _constant_network([0.0, 0.0, 0.0])
+    trainer = WocaRDQNTrainer(vanilla_q, robust_q, worst_attack_q, _make_config())
+
+    importance = trainer._state_importance(states)
+
+    torch.testing.assert_close(importance, torch.tensor([1.0, 1.0 / 3.0]))
+
+
+def test_soft_update_moves_the_target_by_tau() -> None:
+    """
+        Q_v = theta: zero weights, bias [1, 2, 3]. Q_v' = theta': weights 2, bias [-1, 0, 5].
+        With tau = 0.1: weights 0.1 * 0 + 0.9 * 2 = 1.8, bias [0.1 - 0.9, 0.2, 0.3 + 4.5].
+    """
+    tau = 0.1
+    vanilla_q = _constant_network([1.0, 2.0, 3.0])
+    trainer = WocaRDQNTrainer(
+        vanilla_q,
+        _bound(_constant_network([0.0, 0.0, 0.0]), _random_states()),
+        _constant_network([0.0, 0.0, 0.0]),
+        replace(_make_config(), target_update_coefficient=tau),
+    )
+    target_q = trainer._target_vanilla_q
+    assert isinstance(target_q, nn.Sequential)
+    with torch.no_grad():
+        target_q[0].weight.fill_(2.0)
+    _set_bias(target_q, [-1.0, 0.0, 5.0])
+    vanilla_before = _snapshot(vanilla_q)
+
+    trainer._soft_update_target()
+
+    torch.testing.assert_close(target_q[0].weight, torch.full((NUM_ACTIONS, STATE_DIM), 1.8))
+    torch.testing.assert_close(target_q[0].bias, torch.tensor([-0.8, 0.2, 4.8]))
+    assert not _parameters_changed(vanilla_q, vanilla_before)
+
+    # update() with lr > 0 moves Q_v', but only part of the way to the new Q_v.
+    states = _random_states()
+    learning_vanilla_q = _make_mlp(STATE_DIM, NUM_ACTIONS, seed=4)
+    learning_trainer = WocaRDQNTrainer(
+        learning_vanilla_q,
+        _bound(_make_mlp(STATE_DIM, NUM_ACTIONS, seed=2), states),
+        _make_mlp(STATE_DIM, NUM_ACTIONS, seed=3),
+        replace(_make_config(learning_rate=1e-2), target_update_coefficient=tau),
+    )
+    learning_target_q = learning_trainer._target_vanilla_q
+    target_before = _snapshot(learning_target_q)
+    batch = _make_batch(rewards=[1.0, 0.0, -1.0, 2.0], terminated=[0.0, 0.0, 1.0, 0.0])
+
+    learning_trainer.update(batch, step=100)
+
+    assert _parameters_changed(learning_target_q, target_before)
+    assert _parameters_changed(learning_target_q, _snapshot(learning_vanilla_q))
+
+
 # --------------------------------------------------------------------------- #
 # WocaRDQNTrainer: behaviour with real networks
 # --------------------------------------------------------------------------- #
@@ -536,6 +599,19 @@ def _constant_network(values: list[float]) -> nn.Sequential:
     network = nn.Sequential(layer)
     _set_bias(network, values)
     return network
+
+
+def _linear_network(columns: list[list[float]]) -> nn.Sequential:
+    """
+        Bias-free linear network whose weight column i is columns[i], so the
+        one-hot state e_i maps to the Q-values columns[i].
+    """
+    layer = nn.Linear(STATE_DIM, len(columns[0]), bias=False)
+    weight = torch.zeros(len(columns[0]), STATE_DIM)
+    weight[:, : len(columns)] = torch.tensor(columns).T
+    with torch.no_grad():
+        layer.weight.copy_(weight)
+    return nn.Sequential(layer)
 
 
 def _set_bias(network: nn.Sequential, values: list[float]) -> None:
