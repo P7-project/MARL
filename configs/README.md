@@ -8,14 +8,14 @@ It replaces a long command line and keeps the settings of an experiment in one p
 Run from the repository root:
 
 ```bash
-uv run --locked python scripts/train.py --config configs/wocar_dqn_highway.json
+uv run scripts/train.py --config configs/wocar_dqn_highway.json
 ```
 
 - Values in the file replace the defaults of `build_parser` in `scripts/train.py`.
 - Flags given on the command line override the file. For a short test run of the example:
 
   ```bash
-  uv run --locked python scripts/train.py --config configs/wocar_dqn_highway.json --total-steps 6000 --warmup 500
+  uv run scripts/train.py --config configs/wocar_dqn_highway.json --total-steps 6000 --warmup 500
   ```
 
 - Keys are the argparse dest names: the flag without the leading `--`, with `-` replaced by `_`.
