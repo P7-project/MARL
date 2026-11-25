@@ -145,7 +145,8 @@ class WocaRLosses:
 
         The box is the IBP bound of the policy mean over B_epsilon(s').
         """
-        box = self._bounder.action_box(next_aobs, epsilon)
+        with torch.no_grad():
+            box = self._bounder.action_box(next_aobs, epsilon)
         return self._searcher.search(next_states, box)
 
     # ----------------------------------------------------- Algorithm 1 lines 9-10 ---
@@ -177,11 +178,6 @@ class WocaRLosses:
         return advantages + kappa_wst * self._q_values(states, actions)
 
     # ----------------------------------------------------------------- helpers ---
-
-    @torch.no_grad()
-    def policy_q_values(self, states: Tensor, actions: Tensor) -> Tensor:
-        """Q_phi(s, a) at the actions sampled by the current policy."""
-        return self._q_values(states, actions)
 
     def _worst_actions_in_action_space(self, states: Tensor) -> Tensor:
         """argmin_a Q_phi(s, a) over the environment action space."""
