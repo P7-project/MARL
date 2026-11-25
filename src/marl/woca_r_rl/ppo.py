@@ -119,14 +119,22 @@ class WocaRLosses:
         with torch.no_grad():
             value = self._value_network(states)
             worst_q = self._q_values(states, worst_actions)
-            # Definition 4.3 is non-negative by construction; keep the clamp so
-            # small estimation errors cannot turn the regularizer into a reward
-            # for being unstable.
+            # The clamp at 0 is our choice: the estimate V - min Q_phi can be
+            # slightly negative from estimation error, which would turn the
+            # regularizer into a reward for being unstable.
             return (value - worst_q).clamp(min=0.0)
 
-    def regularizer_loss(self, aobs: Tensor, states: Tensor, epsilon: float) -> Tensor:
-        """mean_s[ w(s) * L_reg(s) ] (Algorithm 1, lines 12-13)."""
-        weights = self.state_importance(states)
+    def regularizer_loss(
+        self, aobs: Tensor, states: Tensor, epsilon: float, weights: Tensor | None = None
+    ) -> Tensor:
+        """
+        mean_s[ w(s) * L_reg(s) ] (Algorithm 1, lines 12-13).
+
+        `weights` are precomputed w(s) for these states; if None, they are
+        computed here from `states`.
+        """
+        if weights is None:
+            weights = self.state_importance(states)
         return (weights * self._regularizer.per_state_loss(aobs, epsilon)).mean()
 
     # --------------------------------------------------------- Algorithm 1 line 8 ---
@@ -224,6 +232,9 @@ class SgldRegularizer:
     which is what SA-PPO (and the official WocaR-PPO code) maximizes. The
     maximum is approximated by projected SGLD: a sign step of size
     epsilon / steps plus decaying Langevin noise, as in SA-PPO.
+
+    As in SA-PPO's get_state_kl_bound_sgld, sigma and the clean means mu(s)
+    are detached, so the gradient flows only through mu(s~).
     """
 
     # (1 / beta) from SA-PPO: their gradients are small, so beta = 1e-5.
@@ -241,13 +252,14 @@ class SgldRegularizer:
 
     def per_state_loss(self, states: Tensor, epsilon: float) -> Tensor:
         perturbed = self._find_perturbation(states, epsilon)
-        return self._distance(self._mean_network(states), self._mean_network(perturbed))
+        clean_means = self._mean_network(states).detach()
+        return self._distance(clean_means, self._mean_network(perturbed))
 
     def _distance(self, means: Tensor, perturbed_means: Tensor) -> Tensor:
         deviation = means - perturbed_means
         if self._log_std is None:
             return deviation.pow(2).sum(dim=1)
-        return (deviation / self._log_std.exp()).pow(2).sum(dim=1)
+        return (deviation / self._log_std.detach().exp()).pow(2).sum(dim=1)
 
     def _find_perturbation(self, states: Tensor, epsilon: float) -> Tensor:
         clean_means = self._mean_network(states).detach()
@@ -444,12 +456,12 @@ def _fit_policy(
     args: Namespace,
 ) -> dict[str, float]:
     """Algorithm 1, lines 12-13: robust clipped PPO plus weighted regularization."""
-    # PPO implementations normalize the advantage. We normalize A_hat and
-    # Q_phi separately and only then add them, so kappa_wst has the same scale
-    # regardless of the natural-advantage variance.
-    natural_advantages = _normalize(rollout.advantages)
-    worst_q = _normalize(wocar.policy_q_values(rollout.states, rollout.actions))
-    robust_advantages = natural_advantages + kappa_wst * worst_q
+    robust_advantages = _robust_advantages(
+        wocar, rollout.advantages, rollout.states, rollout.actions, kappa_wst
+    )
+    # Algorithm 1, line 11. V and Q_phi are fixed during the policy phase, so
+    # w(s) is computed once for the whole rollout.
+    state_weights = wocar.state_importance(rollout.states)
 
     horizon = rollout.states.shape[0]
     stats = {"actor": 0.0, "reg": 0.0, "entropy": 0.0}
@@ -472,7 +484,10 @@ def _fit_policy(
 
             # Algorithm 1, line 12: w(s) * L_reg(s) by SGLD.
             reg_loss = wocar.regularizer_loss(
-                rollout.actor_obs[indices], rollout.states[indices], epsilon
+                rollout.actor_obs[indices],
+                rollout.states[indices],
+                epsilon,
+                weights=state_weights[indices],
             )
 
             actor_loss = (
@@ -492,6 +507,18 @@ def _fit_policy(
             update_count += 1
 
     return {key: value / max(update_count, 1) for key, value in stats.items()}
+
+
+def _robust_advantages(
+    wocar: WocaRLosses, advantages: Tensor, states: Tensor, actions: Tensor, kappa_wst: float
+) -> Tensor:
+    """
+    normalize(A_hat + kappa_wst * Q_phi(s, a)) over the whole rollout.
+
+    The raw GAE advantages and raw Q_phi are added first (Algorithm 1, line 13);
+    the sum is normalized once, as PPO implementations normalize the advantage.
+    """
+    return _normalize(wocar.shift_advantages(advantages, states, actions, kappa_wst))
 
 
 def _normalize(values: Tensor) -> Tensor:
