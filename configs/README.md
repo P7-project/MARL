@@ -20,7 +20,7 @@ uv run --locked python scripts/train.py --config configs/wocar_dqn_highway.json
 
 - Keys are the argparse dest names: the flag without the leading `--`, with `-` replaced by `_`.
   `--kappa-reg` becomes `kappa_reg`, `--update-function` becomes `update_function`.
-- Boolean switches (`render`, `reachable_eps_scheduled`, `mse_loss`) take `true` or `false`.
+- Boolean switches (`render`, `reachable_eps_scheduled`, `mse_loss`) must be JSON `true` or `false`; a string such as `"false"` is rejected with an error.
 - JSON has no comments. Put notes in the file name or in this README, not in the file.
 - An unknown key (e.g. a typo like `kapa_reg`), a value outside the allowed choices
   (e.g. `"update_function": "wocar-dqn"`), a missing file or invalid JSON stops the
@@ -60,7 +60,7 @@ Defaults are the `build_parser` defaults (see also `scripts/train.md`).
 | `eps_final` | Final attack radius ε, the value the epsilon schedule ramps to. The default suits Hopper, not highway; pass it for DQN. | float | 0.075 | wocar_ppo, wocar_dqn |
 | `kappa_reg` | Weight of the regularizer term in the loss. Paper grid for PPO: {0.01, 0.03, 0.1, 0.3, 1.0}; for DQN: {0.005, 0.01, 0.02}. | float | 0.1 | wocar_ppo, wocar_dqn |
 
-`config` itself is not a valid key inside a config file.
+`config` and `help` are not valid keys inside a config file and are rejected like unknown keys.
 
 ### MAPPO (also read by WocaR-PPO)
 

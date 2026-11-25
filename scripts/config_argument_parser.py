@@ -33,6 +33,7 @@ class ConfigArgumentParser:
         config: dict[str, Any] = self._load_config(config_path)
         self._validate_keys(config, config_path)
         self._validate_choices(config, config_path)
+        self._validate_switches(config, config_path)
         self._parser.set_defaults(**config)
 
     def _load_config(self, config_path: Path) -> dict[str, Any]:
@@ -68,4 +69,17 @@ class ConfigArgumentParser:
                 self._parser.error(
                     f"invalid value for {action.dest} in config file {config_path}: "
                     f"{value!r} (choose from {allowed})"
+                )
+
+    def _validate_switches(self, config: dict[str, Any], config_path: Path) -> None:
+        for action in self._parser._actions:
+            if action.dest not in config:
+                continue
+            if not isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
+                continue
+            value: Any = config[action.dest]
+            if not isinstance(value, bool):
+                self._parser.error(
+                    f"invalid value for {action.dest} in config file {config_path}: "
+                    f"{value!r} (use JSON true or false)"
                 )
