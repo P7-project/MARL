@@ -161,16 +161,9 @@ class MultiAgentEnvViewer(EnvViewer):
 
 
     def get_render_camera_position(self, agent_idx):
-        """Keep each camera aligned to the same vertical road position."""
-
-        # Get the vehicle assigned to this camera.
+        """Centre each camera on its own car, so the car and its outline stay in view."""
         vehicle = self.get_render_agents()[agent_idx]
-
-        # Follow each vehicle horizontally and align all cameras vertically.
-        return np.array([
-            vehicle.position[0],
-            self.get_render_agents()[0].position[1],
-        ])
+        return np.array(vehicle.position)
 
     def get_render_view_rect(self, agent_idx):
         position = self.get_render_view_position(agent_idx)

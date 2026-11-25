@@ -45,8 +45,11 @@ class TeamHighwayEnv(HighwayEnv):
         return obs, self._last_vehicle_rewards, terminated, truncated, info
 
     def render(self):
-        """HighwayEnv.render, drawn by the multi-agent viewer that highlights attacked cars."""
-        if self.render_mode is not None and self.viewer is None:
+        """HighwayEnv.render; in human mode drawn by the multi-agent viewer that highlights attacked cars.
+
+        Other modes (e.g. rgb_array) keep the stock viewer, which returns a real frame.
+        """
+        if self.render_mode == "human" and self.viewer is None:
             from .render_viewer import MultiAgentEnvViewer  # pygame only when rendering
 
             self.viewer = MultiAgentEnvViewer(self)
