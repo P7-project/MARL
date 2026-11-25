@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import exp
-from typing import Literal, NamedTuple, Optional
+from typing import Any, Literal, NamedTuple, Optional
 
 from gymnasium import spaces
 from rich.console import Console
@@ -537,7 +537,7 @@ def train_dqn(args: Namespace, console: Console) -> None:
                     "n_actions": n_actions,
                     "hidden": args.hidden,
                     "dqn_env": env_name,
-                    "args": vars(args),
+                    "args": _plain_args(args),
                     "reward_function": args.reward,
                     "team_weight": float(env.unwrapped.config["team_reward_weight"]),
                 },
@@ -549,6 +549,20 @@ def train_dqn(args: Namespace, console: Console) -> None:
             renderer.close()
         writer.close()
         env.close()
+
+
+def _plain_args(args: Namespace) -> dict:
+    """The arguments as builtin values, so the checkpoint loads with torch.load's weights_only."""
+    return {name: _plain_value(value) for name, value in vars(args).items()}
+
+
+def _plain_value(value: Any) -> Any:
+    """Keep None, bool, int, float, str and lists/tuples of them; anything else (e.g. Path) becomes str."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_plain_value(item) for item in value]
+    return str(value)
 
 
 def _build_trainer(
@@ -658,6 +672,7 @@ class DqnPlayer(PolicyPlayer):
         reward_function: str = "mean",
         team_weight: float | None = None,
         render: bool = True,
+        render_agents: int | None = None,
     ) -> None:
         self._n_agents: int = n_agents
         self._obs_dim: int = obs_dim
@@ -669,6 +684,7 @@ class DqnPlayer(PolicyPlayer):
             name=env_name,
             reward_function=reward_function,
             team_weight=team_weight,
+            render_agents=render_agents,
         )
         self._policy: BoundedModule = _build_robust_q(
             obs_dim + n_agents, n_actions, hidden, self._device
@@ -701,6 +717,8 @@ class DqnPlayer(PolicyPlayer):
         self._obs = flatten_obs(self._env.reset(seed=seed)[0])
         self._attacked_decisions = 0
         self._changed_decisions = 0
+        if self._render and self._attacked_mask is not None:
+            self._highlight_attacked_cars(self._attacked_mask)
 
     def step(self) -> StepResult:
         if self._obs is None:
@@ -719,6 +737,12 @@ class DqnPlayer(PolicyPlayer):
 
     def close(self) -> None:
         self._env.close()
+
+    def _highlight_attacked_cars(self, attacked_mask: Tensor) -> None:
+        """Mark the attacked cars in the window; reset creates new cars, so call after it."""
+        unwrapped: Any = self._env.unwrapped
+        if hasattr(unwrapped, "set_attacked_agents"):  # only the highway viewer highlights cars
+            unwrapped.set_attacked_agents(attacked_mask.nonzero().flatten().tolist())
 
     @torch.no_grad()
     def _greedy_actions(self, obs: np.ndarray) -> list[int]:
@@ -747,7 +771,9 @@ class DqnPlayer(PolicyPlayer):
         return actions
 
 
-def build_dqn_player(checkpoint: dict, render: bool = True) -> DqnPlayer:
+def build_dqn_player(
+    checkpoint: dict, render: bool = True, render_agents: int | None = None
+) -> DqnPlayer:
     player = DqnPlayer(
         checkpoint["n_agents"],
         checkpoint["obs_dim"],
@@ -757,6 +783,7 @@ def build_dqn_player(checkpoint: dict, render: bool = True) -> DqnPlayer:
         reward_function=checkpoint.get("reward_function", "mean"),
         team_weight=checkpoint.get("team_weight"),
         render=render,
+        render_agents=render_agents,
     )
     player.load_weights(checkpoint["robust_q"])
     return player

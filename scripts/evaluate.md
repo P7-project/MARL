@@ -15,9 +15,19 @@ The observation attack is selected with `--attack`:
 | Value | Description |
 |---|---|
 | not given | No attack. The trained policy is shown in windows. |
-| `minbest` | MinBest (FGSM): one gradient step that makes the car's best action less likely. Runs without windows. |
+| `minbest` | MinBest (FGSM): one gradient step that makes the car's best action less likely. |
+| `pgd` | PGD: ten smaller gradient steps that make the car's best action less likely, as in WocaR-RL Sec. 5. |
+| `random` | Uniform random noise, independent of the policy. A baseline for the two gradient attacks. |
 
-MinBest moves each feature by at most ε and then clips it to [-1, 1].
+Every attack runs without windows unless `--render` is given.
+
+All attacks change only the observation features of the attacked cars, never the one-hot agent ID, move each feature by at most ε, and clip it to [-1, 1]. At ε = 0 every attack returns the clean observation, so the result equals the clean result.
+
+- MinBest takes one step of size ε along the sign of the gradient of the cross-entropy loss against the car's clean greedy action.
+- PGD starts from a random point, uniform in [-ε, ε] around the clean observation, and then takes 10 steps of size ε/10 along the sign of the gradient of the same loss. After each step the observation is projected back to the ε-ball around the clean observation (L-inf) and clipped to [-1, 1]. The result is the observation after the last step.
+- Random adds noise drawn uniformly from [-ε, ε] to each feature.
+
+PGD's random start and the random noise come from a generator seeded with `--seed`. The generator is reset for every ε, so every ε uses the same random numbers and a run is reproducible from its seed.
 
 Run commands from the repository root.
 
@@ -33,6 +43,13 @@ uv run scripts/evaluate.py --checkpoint woca_dqn.pt --attack minbest --epsilon 0
 # Exp-3: all cars are attacked
 uv run scripts/evaluate.py --checkpoint woca_dqn.pt --attack minbest --epsilon 0.05 0.15 --attacked-agents all --episodes 100
 
+# PGD and random noise, at the same radii
+uv run scripts/evaluate.py --checkpoint woca_dqn.pt --attack pgd --epsilon 0.05 0.15 --attacked-agents 1 --episodes 100
+uv run scripts/evaluate.py --checkpoint woca_dqn.pt --attack random --epsilon 0.05 0.15 --attacked-agents 1 --episodes 100
+
+# Watch the attack: one window, the attacked car outlined in red
+uv run scripts/evaluate.py --checkpoint woca_dqn.pt --attack pgd --epsilon 0.15 --attacked-agents 1 --episodes 3 --render
+
 # Also copy results.json to another path
 uv run scripts/evaluate.py --checkpoint woca_dqn.pt --attack minbest --epsilon 0.05 --attacked-agents 1 --episodes 100 --out results.json
 ```
@@ -46,14 +63,15 @@ uv run scripts/evaluate.py --checkpoint woca_dqn.pt --attack minbest --epsilon 0
 | `--checkpoint` (or `--eval`) | Required | Path to a WocaR-DQN or MAPPO checkpoint (see the table above). |
 | `--episodes` (or `--eval-episodes`) | 1000 with `--attack`, otherwise 5 | Number of evaluation episodes: per epsilon with `--attack`, otherwise per window. |
 | `--eval-windows` | 3 | Number of windows. Only without `--attack`. |
-| `--render` | off | Accepted but has no effect (see Rendering). |
-| `--seed` | 0 | Only with `--attack`. Seeds the environment and the choice of attacked cars. |
+| `--render` | off | With `--attack`: show the evaluation in a window and outline the attacked cars. Without `--attack` it has no effect (see Rendering). |
+| `--render-agents` | 1 | Only with `--attack --render`, highway only. Number of camera views in the window, one per car (the first cars), from 1 to the number of cars. |
+| `--seed` | 0 | Only with `--attack`. Seeds the environment, the choice of attacked cars, and the random numbers of `pgd` and `random`. |
 
 ### Observation attack
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `--attack` | None | Name of the attack: `minbest`. |
+| `--attack` | None | Name of the attack: `minbest`, `pgd` or `random`. |
 | `--epsilon` (or `--attack-eps`) | Required with `--attack` | One or more attack radii, each at least 0 and evaluated in turn. There is no default, so every model is compared at the same radii (the checkpoint's `eps_final` is not used). |
 | `--attacked-agents` | `all` | Number of attacked cars, from 0 to the number of cars, or `all`. |
 
@@ -78,7 +96,7 @@ Each run reserves a new folder when it starts and prints its path. If the folder
 
 ## Rendering
 
-Rendering is only available without `--attack`, and is then always on, with or without `--render`:
+Without `--attack`, rendering is always on, with or without `--render`:
 
 ```bash
 # Three windows, two episodes each
@@ -87,7 +105,12 @@ uv run scripts/evaluate.py --checkpoint woca_dqn.pt --eval-windows 3 --episodes 
 
 Each window runs its own environment with all cars and prints the steps, return and crash of each episode. The episodes are not seeded.
 
-With `--attack` no window is opened, and `--render` and `--eval-windows` are ignored.
+With `--attack`, no window is opened unless `--render` is given; `--eval-windows` is ignored. With `--render`, the attacked evaluation runs in one window, at the speed of the simulation, and gives the same results as without it. On highway, the attacked cars of each episode are outlined in red, and `--render-agents` sets how many cars get their own camera view. The intersection environment shows its usual window without outlines.
+
+```bash
+# Two camera views, every car attacked with random noise
+uv run scripts/evaluate.py --checkpoint woca_dqn.pt --attack random --epsilon 0.1 --attacked-agents all --episodes 2 --render --render-agents 2
+```
 
 ## Outputs
 
@@ -126,6 +149,6 @@ Open <http://localhost:6006> to compare evaluation runs.
 ## Adding an attack
 
 1. Add one file in `src/marl/attacks/` with the attack. It must be callable like `ObservationAttack` in `registry.py`: it returns the observations of all cars, and changes only the first `obs_dim` features of the cars in `attacked_mask`.
-2. Add one entry to `ATTACK_BUILDERS` in `src/marl/attacks/registry.py`: the name and a function that builds the attack.
+2. Add one entry to `ATTACK_BUILDERS` in `src/marl/attacks/registry.py`: the name and a function that builds the attack from the evaluation seed (`--seed`). An attack that draws random numbers takes them from its own generator seeded with it, never from the global random state.
 
 The name is then accepted by `--attack`.

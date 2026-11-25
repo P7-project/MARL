@@ -8,7 +8,6 @@ from highway_env import utils
 from highway_env.envs.highway_env import HighwayEnv
 from highway_env.envs.intersection_env import ConnectedLaneMultiAgentIntersectionEnv
 from highway_env.vehicle.controller import ControlledVehicle
-from marl.render_viewer import MultiAgentEnvViewer
 
 from .reward_funcs import get_reward_function
 
@@ -32,6 +31,7 @@ class TeamHighwayEnv(HighwayEnv):
         config: dict[str, Any] = super().default_config()
         config["reward_function"] = "team"
         config["team_reward_weight"] = DEFAULT_HIGHWAY_TEAM_WEIGHT
+        config["render_agents"] = 1  # camera views in the window, one per controlled car
         return config
 
     def configure(self, config: dict) -> None:
@@ -44,24 +44,21 @@ class TeamHighwayEnv(HighwayEnv):
         obs, _reward, terminated, truncated, info = super().step(action)
         return obs, self._last_vehicle_rewards, terminated, truncated, info
 
-
-    def __init__(self, config=None, render_mode=None):
-        super().__init__(config=config, render_mode=render_mode)
-
     def render(self):
-        if self.viewer is None:
+        """HighwayEnv.render, drawn by the multi-agent viewer that highlights attacked cars."""
+        if self.render_mode is not None and self.viewer is None:
+            from .render_viewer import MultiAgentEnvViewer  # pygame only when rendering
+
             self.viewer = MultiAgentEnvViewer(self)
         return super().render()
-
 
     def set_attacked_agents(self, agent_indices: list[int]) -> None:
         """Set the agents whose vehicles should be highlighted during rendering."""
         self.attacked_agents = set(agent_indices)
 
-         # Mark each controlled vehicle according to whether its agent is attacked.
+        # Mark each controlled vehicle according to whether its agent is attacked.
         for agent_idx, vehicle in enumerate(self.controlled_vehicles):
             vehicle.attacked = agent_idx in self.attacked_agents
-           
 
     def _reward(self, action) -> float:
         """Run the reward function once for this step, store the per-vehicle rewards and return their mean."""
@@ -196,13 +193,17 @@ def make_env(
     name: str = "highway",
     reward_function: str = "team",
     team_weight: float | None = None,
+    render_agents: int | None = None,
 ) -> gym.Env:
+    """render_agents (camera views in the window) only applies to highway."""
     if team_weight is not None and (team_weight < 0.0 or team_weight > 1.0):
         raise ValueError(f"team_weight must be in [0, 1], got {team_weight}")
     if name == "intersection":
         return make_intersection_env(n_agents, render_mode, reward_function, team_weight)
     if name == "highway":
-        return make_highway_env(n_agents, render_mode, reward_function, team_weight)
+        return make_highway_env(
+            n_agents, render_mode, reward_function, team_weight, render_agents
+        )
     raise ValueError(f"Unknown environment: {name}")
 
 
@@ -226,6 +227,7 @@ def make_highway_env(
     render_mode: str | None = None,
     reward_function: str = "team",
     team_weight: float | None = None,
+    render_agents: int | None = None,
 ) -> gym.Env:
     config: dict[str, Any] = {
         "controlled_vehicles": n_agents,
@@ -252,6 +254,8 @@ def make_highway_env(
     }
     if team_weight is not None:
         config["team_reward_weight"] = team_weight
+    if render_agents is not None:
+        config["render_agents"] = render_agents
     return gym.make("team-highway-v0", config=config, render_mode=render_mode)
 
 
@@ -270,4 +274,4 @@ def any_vehicle_crashed(env: gym.Env) -> bool:
 def build_actor_obs(obs_flat: np.ndarray, n_agents: int) -> np.ndarray:
     """Append one-hot agent IDs to the per-agent observations."""
     agent_ids = np.eye(n_agents, dtype=np.float32)
-    return  np.concatenate([obs_flat, agent_ids], axis=-1)
+    return np.concatenate([obs_flat, agent_ids], axis=-1)

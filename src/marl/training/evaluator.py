@@ -66,10 +66,12 @@ class EpisodeResult(NamedTuple):
 
 
 def evaluate_attacked(args: Namespace) -> dict:
-    """Headless evaluation under the attack; prints, logs and saves the results in its own folder."""
+    """Evaluation under the attack (headless unless --render); prints, logs and saves the results in its own folder."""
     checkpoint: dict = torch.load(args.eval, map_location="cpu")
     n_agents: int = _checked_agent_count(checkpoint)
     attacked_agents: int = _attacked_count(args.attacked_agents, n_agents)
+    if args.render_agents is not None and not 1 <= args.render_agents <= n_agents:
+        raise ValueError(f"--render-agents must be between 1 and {n_agents}, got {args.render_agents}")
     if args.eval_episodes < 1:
         raise ValueError(f"--eval-episodes must be at least 1, got {args.eval_episodes}")
     if args.out and not Path(args.out).resolve().parent.is_dir():
@@ -79,7 +81,7 @@ def evaluate_attacked(args: Namespace) -> dict:
         n_agents, attacked_agents, args.eval_episodes, args.seed
     )
     epsilons: list[float] = _attack_epsilons(args.attack_eps, attacked_agents)
-    attack: ObservationAttack = build_attack(args.attack)
+    build_attack(args.attack, args.seed)  # rejects an unknown name before the player is created
     report: dict = {
         "settings": {
             "checkpoint": args.eval,
@@ -97,10 +99,14 @@ def evaluate_attacked(args: Namespace) -> dict:
     run_name: str = args.run_name or default_run_name(args.attack, attacked_agents, n_agents)
     folder: Path = reserve_attack_folder(args.logdir, run_name)
     print(f"Attack evaluation folder: {folder}", flush=True)
-    player: DqnPlayer = _builder_for(ATTACK_ALGORITHM)(checkpoint, render=False)
+    player: DqnPlayer = _builder_for(ATTACK_ALGORITHM)(
+        checkpoint, render=args.render, render_agents=args.render_agents
+    )
     writer = create_attack_writer(folder)
     try:
         for epsilon in epsilons:
+            # Rebuilt per radius, so a seeded attack draws the same numbers for every radius.
+            attack: ObservationAttack = build_attack(args.attack, args.seed)
             episodes: list[EpisodeResult] = [
                 _run_attacked_episode(
                     player, attack, epsilon, cars, n_agents, args.seed + episode
