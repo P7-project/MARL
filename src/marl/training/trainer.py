@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.live import Live
 from torch.utils.tensorboard import SummaryWriter
 
-from ..env import build_actor_obs, flatten_obs, make_env
+from ..envs import build_actor_obs, flatten_obs, make_env
 from ..mappo import ppo_update
 from ..models import Actor, Critic
 from functools import partial

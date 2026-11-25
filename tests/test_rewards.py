@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from src.marl import reward_funcs
-from src.marl.env import make_env
-from src.marl.reward_funcs import (
+from src.marl.envs import make_env
+from src.marl.envs.rewards import (
+    REWARD_FUNCTIONS,
     MeanReward,
     RewardFunction,
     TeamReward,
@@ -64,7 +64,7 @@ def test_reward_function_runs_once_per_step(monkeypatch):
             CountingReward.calls += 1
             return MeanReward()(env)
 
-    monkeypatch.setitem(reward_funcs.REWARD_FUNCTIONS, "counting", CountingReward)
+    monkeypatch.setitem(REWARD_FUNCTIONS, "counting", CountingReward)
     env = make_env(3, reward_function="counting")
     env.reset(seed=0)
     for steps in range(1, 4):

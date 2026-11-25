@@ -10,7 +10,7 @@ from config_argument_parser import ConfigArgumentParser
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from marl.rendering import add_render_arguments
-from marl.reward_funcs import REWARD_FUNCTIONS
+from marl.envs import REWARD_FUNCTIONS
 from marl.training.trainer import train
 from marl.woca_r_rl.ppo import train_ppo
 from marl.woca_r_rl.dqn import train_dqn
@@ -70,7 +70,7 @@ def build_parser() -> ConfigArgumentParser:
         "--reward",
         choices=list(REWARD_FUNCTIONS),
         default="team",
-        help="Reward function for the multi-agent environments (marl.reward_funcs)",
+        help="Reward function for the multi-agent environments (marl.envs.rewards)",
     )
     parser.add_argument(
         "--team-weight",
