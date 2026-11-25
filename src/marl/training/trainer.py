@@ -34,7 +34,12 @@ def train(args: Namespace) -> None:
         env_name: str = getattr(args, "env", LEGACY_ENV_NAME)
         if env_name not in MAPPO_ENV_NAMES:
             raise ValueError(f"MAPPO supports {MAPPO_ENV_NAMES}, got {env_name!r}")
-        env = make_env(n_agents, name=env_name)
+        env = make_env(
+            n_agents,
+            name=env_name,
+            reward_function=args.reward,
+            team_weight=args.team_weight,
+        )
         observation_space = env.observation_space
         action_space = env.action_space
         assert isinstance(observation_space, spaces.Tuple)
@@ -52,7 +57,16 @@ def train(args: Namespace) -> None:
         opt_critic = torch.optim.Adam(critic.parameters(), lr=args.lr_critic, eps=1e-5)
 
         renderer: AsyncPolicyRenderer | None = create_renderer(
-            args, partial(MappoPlayer, n_agents, obs_dim, n_actions, env_name)
+            args,
+            partial(
+                MappoPlayer,
+                n_agents,
+                obs_dim,
+                n_actions,
+                env_name,
+                args.reward,
+                args.team_weight,
+            ),
         )
 
         obs, _ = env.reset(seed=args.seed)
@@ -90,7 +104,7 @@ def train(args: Namespace) -> None:
                     actions = tuple(int(item) for item in action.cpu().numpy())
                     next_obs, reward, terminated, truncated, _info = env.step(actions)
                     next_obs = flatten_obs(next_obs)
-                    reward = float(reward)
+                    reward = float(np.mean(reward))  # MAPPO trains on one team reward
                     done = terminated or truncated
 
                     # Time-limit truncation is not terminal, so include its bootstrap.
@@ -176,10 +190,22 @@ class MappoPlayer(PolicyPlayer):
     """Plays the shared categorical actor greedily in the multi-agent team env."""
 
     def __init__(
-        self, n_agents: int, obs_dim: int, n_actions: int, env_name: str = LEGACY_ENV_NAME
+        self,
+        n_agents: int,
+        obs_dim: int,
+        n_actions: int,
+        env_name: str = LEGACY_ENV_NAME,
+        reward_function: str = "mean",
+        team_weight: float | None = None,
     ) -> None:
         self._n_agents: int = n_agents
-        self._env = make_env(n_agents, render_mode="human", name=env_name)
+        self._env = make_env(
+            n_agents,
+            render_mode="human",
+            name=env_name,
+            reward_function=reward_function,
+            team_weight=team_weight,
+        )
         self._actor: Actor = Actor(obs_dim + n_agents, n_actions)
         self._actor.eval()
         self._obs: np.ndarray | None = None
@@ -198,7 +224,7 @@ class MappoPlayer(PolicyPlayer):
         self._env.render()  # remove if make_env's human mode already draws inside step
         self._obs = flatten_obs(next_obs)
         crashed: bool | None = any_vehicle_crashed(self._env)
-        return StepResult(finished=terminated or truncated, reward=float(_reward), crashed=crashed)
+        return StepResult(finished=terminated or truncated, reward=float(np.mean(_reward)), crashed=crashed)
 
     def close(self) -> None:
         self._env.close()

@@ -11,13 +11,20 @@ from mpe2 import simple_spread_v3
 from pettingzoo import ParallelEnv
 from rich.console import Console
 
-from scripts.train import build_parser
 from src.marl.env import any_vehicle_crashed, build_actor_obs, flatten_obs, make_env
 from src.marl.models import Actor
 from src.marl.rendering import PolicyPlayer, StepResult
 from src.marl.simple_spread import SIMPLE_SPREAD_MAX_CYCLES, SimpleSpreadEnv
 from src.marl.training import evaluator, trainer
 from src.marl.woca_r_rl import dqn
+
+# scripts.train imports the package as `marl`, a second copy of `src.marl` that
+# re-registers the team envs. Restore the registrations so every test module keeps
+# building the `src.marl` classes.
+_registered_envs = dict(gym.registry)
+from scripts.train import build_parser  # noqa: E402
+
+gym.registry.update(_registered_envs)
 
 N_AGENTS: int = 4
 N_ACTIONS: int = 5  # no_action, left, right, down, up
@@ -128,7 +135,12 @@ def test_dqn_still_accepts_the_legacy_namespace_field(monkeypatch: pytest.Monkey
     with pytest.raises(RuntimeError, match="environment selected"):
         dqn.train_dqn(args, Console(quiet=True))
 
-    make_legacy_env.assert_called_once_with(args.agents, name="intersection")
+    make_legacy_env.assert_called_once_with(
+        args.agents,
+        name="intersection",
+        reward_function=args.reward,
+        team_weight=args.team_weight,
+    )
 
 
 def _record_env_names(monkeypatch: pytest.MonkeyPatch, module: object) -> list[str]:
@@ -136,7 +148,11 @@ def _record_env_names(monkeypatch: pytest.MonkeyPatch, module: object) -> list[s
     names: list[str] = []
 
     def fake_make_env(
-        n_agents: int, render_mode: str | None = None, name: str = "highway"
+        n_agents: int,
+        render_mode: str | None = None,
+        name: str = "highway",
+        reward_function: str = "team",
+        team_weight: float | None = None,
     ) -> gym.Env:
         names.append(name)
         return make_env(n_agents, name=name)

@@ -1,29 +1,57 @@
 """Team environment setup (MPE2 Simple Spread, highway-env) and observation helpers."""
 
+from typing import Any
+
 import gymnasium as gym
 import numpy as np
 from highway_env import utils
 from highway_env.envs.common.abstract import AbstractEnv
 from highway_env.envs.highway_env import HighwayEnv
+from highway_env.envs.intersection_env import ConnectedLaneMultiAgentIntersectionEnv
 from highway_env.vehicle.controller import ControlledVehicle
 
+from .reward_funcs import get_reward_function
 from .simple_spread import SimpleSpreadEnv
 
 ENV_NAMES: tuple[str, ...] = ("simple_spread", "highway", "intersection")
 DEFAULT_ENV_NAME: str = "simple_spread"  # CLI default
 LEGACY_ENV_NAME: str = "highway"  # for checkpoints saved before the env was recorded
 
+# A highway episode ends as soon as any controlled vehicle crashes, so a
+# teammate's crash already ends the episode for everyone and the mixed term
+# mostly shapes the driving reward: a larger weight keeps it visible.
+DEFAULT_HIGHWAY_TEAM_WEIGHT: float = 0.25
+# An intersection episode ends per agent, so a crashed teammate's negative
+# reward is mixed into the survivors again on every remaining step and those
+# steps accumulate: a smaller per-step weight already makes a crash costly.
+DEFAULT_INTERSECTION_TEAM_WEIGHT: float = 0.1
+
 
 class TeamHighwayEnv(HighwayEnv):
-    """Highway driving with one reward and episode outcome shared by all controlled vehicles."""
+    """Highway driving with one reward per controlled vehicle and a shared episode outcome."""
+
+    @classmethod
+    def default_config(cls) -> dict[str, Any]:
+        """HighwayEnv's config plus the reward function name and its team weight."""
+        config: dict[str, Any] = super().default_config()
+        config["reward_function"] = "team"
+        config["team_reward_weight"] = DEFAULT_HIGHWAY_TEAM_WEIGHT
+        return config
+
+    def configure(self, config: dict) -> None:
+        """HighwayEnv.configure, then build the configured reward function (fails early on a bad name)."""
+        super().configure(config)
+        self.reward_function = get_reward_function(self.config["reward_function"])
+
+    def step(self, action) -> tuple:
+        """HighwayEnv.step, but the reward is one value per controlled vehicle."""
+        obs, _reward, terminated, truncated, info = super().step(action)
+        return obs, self._last_vehicle_rewards, terminated, truncated, info
 
     def _reward(self, action) -> float:
-        """Average the per-vehicle driving reward over all controlled vehicles."""
-        return float(
-            np.mean(
-                [self._agent_reward(vehicle) for vehicle in self.controlled_vehicles]
-            )
-        )
+        """Run the reward function once for this step, store the per-vehicle rewards and return their mean."""
+        self._last_vehicle_rewards = self.reward_function(self)
+        return float(np.mean(self._last_vehicle_rewards))
 
     def _rewards(self, action) -> dict[str, float]:
         """Average each reward term over all controlled vehicles."""
@@ -73,6 +101,12 @@ class TeamHighwayEnv(HighwayEnv):
             "on_road_reward": float(vehicle.on_road),
         }
 
+    def raw_vehicle_rewards(self) -> tuple[float, ...]:
+        """The stock per-vehicle driving rewards, before the reward function mixes them."""
+        return tuple(
+            float(self._agent_reward(vehicle)) for vehicle in self.controlled_vehicles
+        )
+
     def _is_terminated(self) -> bool:
         """The episode is over if any controlled vehicle crashed or, if configured, left the road."""
         return any(
@@ -94,32 +128,99 @@ class TeamHighwayEnv(HighwayEnv):
         return info
 
 
+class TeamIntersectionEnv(ConnectedLaneMultiAgentIntersectionEnv):
+    """Intersection driving with one reward per controlled vehicle and per-agent termination.
+
+    ``step`` replaces ``MultiAgentWrapper`` (which ``intersection-multi-agent-v2``
+    uses) on purpose: it returns the per-agent rewards computed by the configured
+    reward function together with ``info["agents_terminated"]``, so the reward can
+    come from ``marl.reward_funcs`` instead of the stock cooperative mean.
+    """
+
+    @classmethod
+    def default_config(cls) -> dict[str, Any]:
+        """V2's config plus the reward function name and its team weight."""
+        config: dict[str, Any] = super().default_config()
+        config["reward_function"] = "team"
+        config["team_reward_weight"] = DEFAULT_INTERSECTION_TEAM_WEIGHT
+        return config
+
+    def configure(self, config: dict) -> None:
+        """Configure the env, build the reward function and reset the per-step caches."""
+        super().configure(config)
+        self.reward_function = get_reward_function(self.config["reward_function"])
+        self._last_vehicle_rewards: tuple[float, ...] = ()
+        self._last_action: Any = None
+
+    def step(self, action) -> tuple:
+        """Stock step, with per-agent rewards and per-agent termination instead of the team mean."""
+        obs, _reward, _terminated, truncated, info = super().step(action)
+        return obs, self._last_vehicle_rewards, info["agents_terminated"], truncated, info
+
+    def _reward(self, action) -> float:
+        """Run the reward function once for this step, store the per-vehicle rewards and return their mean."""
+        self._last_action = action
+        self._last_vehicle_rewards = self.reward_function(self)
+        return float(np.mean(self._last_vehicle_rewards))
+
+    def raw_vehicle_rewards(self) -> tuple[float, ...]:
+        """The stock IntersectionEnv per-vehicle rewards for the action being rewarded."""
+        return tuple(
+            float(self._agent_reward(self._last_action, vehicle))
+            for vehicle in self.controlled_vehicles
+        )
+
+
 gym.register(id="team-highway-v0", entry_point=TeamHighwayEnv)
+gym.register(id="team-intersection-v0", entry_point=TeamIntersectionEnv)
+
 
 def make_env(
-    n_agents: int = 3, render_mode: str | None = None, name: str = LEGACY_ENV_NAME
+    n_agents: int = 3,
+    render_mode: str | None = None,
+    name: str = LEGACY_ENV_NAME,
+    reward_function: str = "team",
+    team_weight: float | None = None,
 ) -> gym.Env:
-    """Build the named team environment with one observation and action per agent."""
+    """Build the named team environment with one observation and action per agent.
+
+    The reward options apply only to the driving envs; Simple Spread ignores them.
+    """
+    if team_weight is not None and (team_weight < 0.0 or team_weight > 1.0):
+        raise ValueError(f"team_weight must be in [0, 1], got {team_weight}")
     if name == "simple_spread":
         return SimpleSpreadEnv(n_agents, render_mode=render_mode)
     if name == "intersection":
-        return make_intersection_env(n_agents, render_mode)
+        return make_intersection_env(n_agents, render_mode, reward_function, team_weight)
     if name == "highway":
-        return make_highway_env(n_agents, render_mode)
+        return make_highway_env(n_agents, render_mode, reward_function, team_weight)
     raise ValueError(f"Unknown environment: {name}")
 
 
-def make_intersection_env(n_agents: int = 3, render_mode=None) -> gym.Env:
-    return gym.make(
-        "intersection-multi-agent-v2",
-        config={"controlled_vehicles": n_agents},
-        render_mode=render_mode,
-    )
-
-
-def make_highway_env(n_agents: int = 3, render_mode=None) -> gym.Env:
-    config = {
+def make_intersection_env(
+    n_agents: int = 3,
+    render_mode: str | None = None,
+    reward_function: str = "team",
+    team_weight: float | None = None,
+) -> gym.Env:
+    config: dict[str, Any] = {
         "controlled_vehicles": n_agents,
+        "reward_function": reward_function,
+    }
+    if team_weight is not None:
+        config["team_reward_weight"] = team_weight
+    return gym.make("team-intersection-v0", config=config, render_mode=render_mode)
+
+
+def make_highway_env(
+    n_agents: int = 3,
+    render_mode: str | None = None,
+    reward_function: str = "team",
+    team_weight: float | None = None,
+) -> gym.Env:
+    config: dict[str, Any] = {
+        "controlled_vehicles": n_agents,
+        "reward_function": reward_function,
         "observation": {
             "type": "MultiAgentObservation",
             "observation_config": {
@@ -140,6 +241,8 @@ def make_highway_env(n_agents: int = 3, render_mode=None) -> gym.Env:
         "policy_frequency": 1,
         "simulation_frequency": 15,
     }
+    if team_weight is not None:
+        config["team_reward_weight"] = team_weight
     return gym.make("team-highway-v0", config=config, render_mode=render_mode)
 
 
