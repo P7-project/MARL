@@ -11,6 +11,7 @@ from config_argument_parser import ConfigArgumentParser
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from marl.rendering import add_render_arguments
+from marl.reward_funcs import REWARD_FUNCTIONS
 from marl.training.trainer import train
 from marl.woca_r_rl.ppo import train_ppo
 from marl.woca_r_rl.dqn import train_dqn
@@ -28,6 +29,7 @@ class UpdateFunction(Enum):
 def main() -> None:
     parser: ConfigArgumentParser = build_parser()
     args: argparse.Namespace = parser.parse()
+    args.run_name = args.run_name or build_default_run_name(args.update_function)
     
     if args.update_function == UpdateFunction.wocar_ppo.value:
         train_ppo(args)
@@ -58,11 +60,26 @@ def build_parser() -> ConfigArgumentParser:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--save", type=str, default=get_default_save_name())
     parser.add_argument("--logdir", type=str, default="runs")
-    parser.add_argument("--run-name", type=str, default=datetime.now().strftime("%Y%m%d-%H%M%S"))
+    parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument(
         "--update-function",
         choices=[f.value for f in UpdateFunction],
         default=UpdateFunction.mappo.value,
+    )
+    parser.add_argument(
+        "--reward",
+        choices=list(REWARD_FUNCTIONS),
+        default="team",
+        help="Reward function for the multi-agent environments (marl.reward_funcs)",
+    )
+    parser.add_argument(
+        "--team-weight",
+        type=float,
+        default=None,
+        help=(
+            "Weight of the teammates' mean reward in each agent's reward, in [0, 1] "
+            "(default: 0.25 for highway, 0.1 for intersection)"
+        ),
     )
     parser.add_argument("--kappa-reg", type=float, default=0.1) # Weight of the regularizer term in the actor loss. The paper grid-searches {0.01, 0.03, 0.1, 0.3, 1.0}. "where κ_wst and κ_reg are hyperparameters balancing between natural performance and robustness"
     parser.add_argument("--eps-final", type=float, default=0.075) # Final attack radius ε, the value epsilon_schedule ramps to.    
@@ -115,6 +132,10 @@ def _highest_save_number(save_directory: Path) -> int:
         if match is not None:
             numbers.append(int(match.group(1)))
     return max(numbers, default=0)
+
+def build_default_run_name(update_function: str) -> str:
+    timestamp: str = datetime.now().strftime("%d_%H-%M-%S")
+    return f"{update_function}_{timestamp}"
 
 
 if __name__ == "__main__":
