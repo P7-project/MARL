@@ -8,31 +8,31 @@ One entry point, three training modes selected by `--update-function`.
 | `wocar_ppo` | WocaR-PPO (Algorithm 1) | `train_ppo` | single-agent Mujoco, continuous actions |
 | `wocar_dqn` | WocaR-DQN (Algorithm 2) | `train_dqn` | multi-agent highway or intersection, discrete actions |
 
-Run commands from the repository root. `uv run --locked` uses dependencies from `uv.lock`.
+Run commands from the repository root.
 
 ## Examples
 
 ```bash
 # MAPPO baseline (defaults)
-uv run --locked python scripts/train.py --update-function mappo
+uv run scripts/train.py --update-function mappo
 
 # WocaR-PPO on Hopper (mujoco is installed by `uv sync`)
-uv run --locked python scripts/train.py --update-function wocar_ppo --env-id Hopper-v5 \
+uv run scripts/train.py --update-function wocar_ppo --env-id Hopper-v5 \
     --total-steps 2000000 --rollout 2048 --save woca_ppo.pt \
     --eps-final 0.075 --kappa-wst-final 0.8 --kappa-reg 0.1
 
 # WocaR-DQN on highway
-uv run --locked python scripts/train.py --update-function wocar_dqn --dqn-env highway --agents 3 \
+uv run scripts/train.py --update-function wocar_dqn --dqn-env highway --agents 3 \
     --total-steps 200000 --warmup 5000 --save woca_dqn.pt \
     --eps-final 0.01 --kappa-reg 0.01
 
 # WocaR-DQN on the multi-agent intersection
-uv run --locked python scripts/train.py --update-function wocar_dqn --dqn-env intersection --agents 2 \
+uv run scripts/train.py --update-function wocar_dqn --dqn-env intersection --agents 2 \
     --total-steps 200000 --warmup 5000 --save woca_dqn_intersection.pt \
     --eps-final 0.01 --kappa-reg 0.01
 
 # Rendered smoke run for WocaR-DQN on intersection (total-steps must exceed warmup)
-uv run --locked python scripts/train.py --update-function wocar_dqn --dqn-env intersection \
+uv run scripts/train.py --update-function wocar_dqn --dqn-env intersection \
     --agents 2 --total-steps 5000 --warmup 500 --render
 ```
 
@@ -54,12 +54,20 @@ An argument a mode does not read is accepted and ignored.
 |---|---|---|
 | `--update-function` | `mappo` | Selects the mode: `mappo`, `wocar_ppo`, `wocar_dqn`. |
 | `--agents` | 3 | Number of controlled vehicles. Ignored by `wocar_ppo`. |
+| `--reward` | `team` | Reward function for the multi-agent environments: `mean` gives every vehicle the team mean, `team` mixes each vehicle's own reward with its teammates' mean. Comes from `REWARD_FUNCTIONS` in `src/marl/reward_funcs.py`. Ignored by `wocar_ppo`. |
+| `--team-weight` | per environment | Weight `lambda_env` of the teammates' mean reward; must be in `[0, 1]`. Defaults: `0.25` for highway, `0.1` for intersection. Only used by `--reward team`. Ignored by `wocar_ppo`. |
 | `--total-steps` | 200000 | Total environment steps. |
 | `--seed` | 0 | Seeds numpy and torch. |
 | `--gamma` | 0.99 | Discount factor. |
 | `--save` | `default_save_name.N.pt` | Checkpoint path, relative to the current working directory. `N` is the next unused number, picked at launch. Pass a name per run to avoid two simultaneous runs choosing the same file. |
 | `--logdir` | `runs` | TensorBoard root. Logs go to `<logdir>/<run-name>`. |
 | `--run-name` | timestamp | Sub-directory name inside `--logdir`. |
+
+With `--reward team` (the default), each vehicle gets
+
+`r_i = (1 - lambda_env) * r_i^env + lambda_env * mean_{j != i} r_j^env`
+
+where `lambda_env` is `--team-weight`, the teammate mean includes crashed and arrived vehicles, and `lambda_env = 0` reproduces the stock rewards. The default differs per environment because a highway episode ends for every vehicle when any of them crashes (a larger weight keeps a teammate's crash visible), while an intersection episode continues per agent, so a crashed teammate's penalty is mixed in again on every remaining step and accumulates (a smaller weight already makes it costly). MAPPO trains on the mean of the returned per-vehicle rewards, which the mixing leaves unchanged.
 
 ## PPO (`mappo` and `wocar_ppo`)
 
@@ -127,7 +135,7 @@ With 3 agents, updates begin well before ε starts ramping.
 - TensorBoard logs in `<logdir>/<run-name>`: `episode/return`, losses, and for WocaR runs `woca/epsilon` and `woca/kappa_wst`.
 
 ```bash
-uv run --locked tensorboard --logdir runs
+uv run tensorboard --logdir runs
 ```
 
 ## Sanity check
