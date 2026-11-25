@@ -27,6 +27,7 @@ class UpdateFunction(Enum):
 def main() -> None:
     parser: argparse.ArgumentParser = build_parser()
     args: argparse.Namespace = parser.parse_args()
+    args.run_name = args.run_name or build_default_run_name(args.update_function)
     
     if args.update_function == UpdateFunction.wocar_ppo.value:
         train_ppo(args)
@@ -56,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--save", type=str, default=get_default_save_name())
     parser.add_argument("--logdir", type=str, default="runs")
-    parser.add_argument("--run-name", type=str, default=datetime.now().strftime("%Y%m%d-%H%M%S"))
+    parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument(
         "--update-function",
         choices=[f.value for f in UpdateFunction],
@@ -112,6 +113,10 @@ def _highest_save_number(save_directory: Path) -> int:
         if match is not None:
             numbers.append(int(match.group(1)))
     return max(numbers, default=0)
+
+def build_default_run_name(update_function: str) -> str:
+    timestamp: str = datetime.now().strftime("%d_%H-%M-%S")
+    return f"{update_function}_{timestamp}"
 
 
 if __name__ == "__main__":
