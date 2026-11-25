@@ -47,7 +47,7 @@ Defaults are the `build_parser` defaults (see also `scripts/train.md`).
 | `total_steps` | Total environment steps. | int | 200000 | all |
 | `gamma` | Discount factor. | float | 0.99 | all |
 | `seed` | Seeds numpy and torch. | int | 0 | all |
-| `save` | Checkpoint path, relative to the working directory. Only set it when you want a fixed path; runs with the same path overwrite each other. Its folder is created at launch if it does not exist. | str or `null` | `null` (becomes `<logdir>/<run_name>/model.pt`, or `model.2.pt`, `model.3.pt`, ... if taken) | all |
+| `save` | Checkpoint path, relative to the working directory. Only set it when you want a fixed path; runs with the same path overwrite each other. Its folder is created at launch if it does not exist. | str or `null` | `null` (becomes `<logdir>/<run_name>/model.pt`, in the run's own folder) | all |
 | `logdir` | TensorBoard root; logs go to `<logdir>/<run_name>`. | str | `runs` | all |
 | `run_name` | Sub-directory name inside `logdir`. Every run gets its own new folder: if `<logdir>/<run_name>` already exists (same-second start or a reused name), `_2`, `_3`, ... is appended; the final name is printed at launch. | str | `null` (becomes `<update_function>_<day>_<HH-MM-SS>`) | all |
 | `agents` | Number of controlled vehicles. | int | 3 | mappo, wocar_dqn |
