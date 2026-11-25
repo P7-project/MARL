@@ -27,6 +27,8 @@ def main() -> None:
     parser: ConfigArgumentParser = build_parser()
     args: argparse.Namespace = parser.parse()
     args.run_name = args.run_name or build_default_run_name(args.update_function)
+    args.run_name = reserve_run_folder(Path(args.logdir), args.run_name)
+    console.print(f"Run name: {args.run_name}")
     resolve_save_path(args)
 
     if args.update_function == UpdateFunction.wocar_ppo.value:
@@ -111,10 +113,34 @@ def build_parser() -> ConfigArgumentParser:
     return ConfigArgumentParser(parser)
 
 
+def reserve_run_folder(logdir: Path, run_name: str) -> str:
+    """Create a new <logdir>/<run_name> folder and return the name that was used.
+
+    If the folder exists, try <run_name>_2, <run_name>_3, ... The folder is created
+    with exist_ok=False, so two runs started at the same time never share it.
+    """
+    logdir.mkdir(parents=True, exist_ok=True)
+    number: int = 1
+    while True:
+        name: str = run_name if number == 1 else f"{run_name}_{number}"
+        try:
+            (logdir / name).mkdir(exist_ok=False)
+        except FileExistsError:
+            number += 1
+            continue
+        return name
+
+
 def resolve_save_path(args: argparse.Namespace) -> None:
-    """Set args.save to a reserved file in the run folder when --save was not given."""
+    """Set args.save to a reserved file in the run folder when --save was not given.
+
+    For an explicit --save, create its parent folder so torch.save does not fail
+    after training.
+    """
     if args.save is None:
         args.save = reserve_default_save_path(Path(args.logdir) / args.run_name)
+    else:
+        Path(args.save).parent.mkdir(parents=True, exist_ok=True)
 
 
 def reserve_default_save_path(save_directory: Path) -> str:
