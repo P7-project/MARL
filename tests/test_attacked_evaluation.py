@@ -4,11 +4,10 @@ import sys
 from argparse import Namespace
 from pathlib import Path
 
+import highway_env.envs.common.abstract as highway_abstract
 import numpy as np
-import pygame
 import pytest
 import torch
-from highway_env.envs.common.graphics import EnvViewer
 
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
@@ -21,35 +20,17 @@ N_AGENTS: int = 5
 HIDDEN: int = 16
 EPISODES: int = 2
 ENV_SIZES: dict[str, tuple[int, int]] = {"highway": (25, 5), "intersection": (105, 3)}
-VIEWER_INIT = EnvViewer.__init__
 SCRIPT: Path = Path(__file__).resolve().parents[1] / "scripts" / "evaluate.py"
 
 
 @pytest.fixture(autouse=True)
 def no_window(monkeypatch) -> None:
-    """Creating a viewer, or a subclass of it, makes any of these tests fail."""
+    """Creating a viewer makes any of these tests fail."""
 
     def fail(*args, **kwargs) -> None:
         raise AssertionError("a window was created")
 
-    monkeypatch.setattr(EnvViewer, "__init__", fail)
-
-
-@pytest.fixture
-def dummy_window(no_window, monkeypatch) -> list[EnvViewer]:
-    """Allow viewers that draw without a real window, and collect them."""
-    viewers: list[EnvViewer] = []
-
-    def create(self: EnvViewer, *args, **kwargs) -> None:
-        VIEWER_INIT(self, *args, **kwargs)
-        assert pygame.display.get_driver() == "dummy"
-        self.enabled = True  # highway-env does not draw on the dummy driver by default
-        viewers.append(self)
-
-    pygame.display.quit()
-    monkeypatch.setenv("SDL_VIDEODRIVER", "dummy")
-    monkeypatch.setattr(EnvViewer, "__init__", create)
-    return viewers
+    monkeypatch.setattr(highway_abstract, "EnvViewer", fail)
 
 
 @pytest.fixture(params=["highway", "intersection"])
@@ -116,8 +97,6 @@ def _args(checkpoint: dict, tmp_path: Path, **overrides) -> Namespace:
         "eval_episodes": EPISODES,
         "seed": 0,
         "out": None,
-        "render": False,
-        "render_agents": 1,
     }
     return Namespace(**{**values, **overrides})
 
@@ -375,60 +354,6 @@ def test_headless_player_creates_no_window(checkpoint) -> None:
     assert player._env.unwrapped.render_mode is None
     assert player._env.unwrapped.viewer is None
     player.close()
-
-
-@pytest.mark.parametrize("count", [0, 1, "all"])
-def test_attacked_cars_are_marked_after_every_reset(tmp_path, monkeypatch, count) -> None:
-    marked: list[list[int]] = []
-    start_episode = DqnPlayer.start_episode
-
-    def record(self: DqnPlayer, seed: int | None = None) -> None:
-        start_episode(self, seed)
-        vehicles = self._env.unwrapped.controlled_vehicles
-        marked.append([car for car, vehicle in enumerate(vehicles) if vehicle.attacked])
-
-    monkeypatch.setattr(DqnPlayer, "start_episode", record)
-    report: dict = evaluate_attacked(
-        _args(_checkpoint("highway"), tmp_path, attacked_agents=count)
-    )
-    expected: list[list[int]] = [
-        sorted(cars) if result["epsilon"] > 0 else []
-        for result in report["results"]
-        for cars in result["episode_attacked_cars"]
-    ]
-    assert marked == expected
-    assert any(marked) == (count != 0)
-
-
-def test_rendering_does_not_change_the_results(tmp_path, dummy_window) -> None:
-    checkpoint: dict = _checkpoint("highway")
-    headless: dict = evaluate_attacked(_args(checkpoint, tmp_path))
-    assert not dummy_window
-    rendered: dict = evaluate_attacked(
-        _args(checkpoint, tmp_path, render=True, render_agents=N_AGENTS)
-    )
-    assert rendered == headless
-    assert len(dummy_window) == 1
-    assert len(dummy_window[0].render_surfaces) == N_AGENTS
-
-
-def _player_must_not_be_created(*args, **kwargs) -> None:
-    raise AssertionError("a player was created")
-
-
-def test_rendering_rejects_other_environments(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(DqnPlayer, "__init__", _player_must_not_be_created)
-    with pytest.raises(ValueError, match="only supports highway, got intersection"):
-        evaluate_attacked(_args(_checkpoint("intersection"), tmp_path, render=True))
-
-
-@pytest.mark.parametrize("views", [0, N_AGENTS + 1])
-def test_invalid_view_count_is_rejected(tmp_path, monkeypatch, views) -> None:
-    monkeypatch.setattr(DqnPlayer, "__init__", _player_must_not_be_created)
-    with pytest.raises(ValueError, match="--render-agents must be between 1 and 5"):
-        evaluate_attacked(
-            _args(_checkpoint("highway"), tmp_path, render=True, render_agents=views)
-        )
 
 
 @pytest.mark.parametrize("algorithm", ["mappo", "wocar_ppo", None])

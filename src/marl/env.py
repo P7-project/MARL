@@ -8,7 +8,6 @@ from highway_env import utils
 from highway_env.envs.highway_env import HighwayEnv
 from highway_env.vehicle.controller import ControlledVehicle
 
-from .render_viewer import MultiAgentEnvViewer
 from .reward_funcs import get_reward_function
 
 
@@ -26,18 +25,6 @@ class TeamHighwayEnv(HighwayEnv):
         """HighwayEnv.configure, then build the configured reward function (fails early on a bad name)."""
         super().configure(config)
         self.reward_function = get_reward_function(self.config["reward_function"])
-
-    def render(self) -> np.ndarray | None:
-        """HighwayEnv.render, with the viewer that outlines attacked vehicles."""
-        if self.viewer is None and self.render_mode is not None:
-            self.viewer = MultiAgentEnvViewer(self)
-        return super().render()
-
-    def set_attacked_agents(self, agent_indices: list[int]) -> None:
-        """Set the agents whose vehicles should be highlighted during rendering."""
-        self.attacked_agents = set(agent_indices)
-        for agent_idx, vehicle in enumerate(self.controlled_vehicles):
-            vehicle.attacked = agent_idx in self.attacked_agents
 
     def step(self, action) -> tuple:
         """HighwayEnv.step, but the reward is one value per controlled vehicle."""
@@ -125,12 +112,11 @@ def make_env(
     render_mode=None,
     name: str = "highway",
     reward_function: str = "mean",
-    render_agents: int = 1,
 ) -> gym.Env:
     if name == "intersection":
         return make_intersection_env(n_agents, render_mode)
     if name == "highway":
-        return make_highway_env(n_agents, render_mode, reward_function, render_agents)
+        return make_highway_env(n_agents, render_mode, reward_function)
     raise ValueError(f"Unknown environment: {name}")
 
 
@@ -143,17 +129,11 @@ def make_intersection_env(n_agents: int = 3, render_mode=None) -> gym.Env:
 
 
 def make_highway_env(
-    n_agents: int = 3,
-    render_mode=None,
-    reward_function: str = "mean",
-    render_agents: int = 1,
+    n_agents: int = 3, render_mode=None, reward_function: str = "mean"
 ) -> gym.Env:
     config = {
         "controlled_vehicles": n_agents,
         "reward_function": reward_function,
-        "render_agents": render_agents,
-        "screen_width": 900,
-        "screen_height": 450,
         "observation": {
             "type": "MultiAgentObservation",
             "observation_config": {

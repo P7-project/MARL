@@ -32,9 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval", "--checkpoint", dest="eval", type=str, required=True, help="path to checkpoint")
     parser.add_argument("--eval-episodes", "--episodes", dest="eval_episodes", type=int, default=None)  # default 5, or 1000 with --attack
     parser.add_argument("--eval-windows", type=int, default=3)  # parallel windows, each running all agents
-    parser.add_argument("--render", action="store_true")  # with --attack: show one window (highway only)
-    parser.add_argument("--render-agents", type=int, default=1)  # views in that window, at most the number of cars
-    parser.add_argument("--attack", choices=list(ATTACK_BUILDERS), default=None)  # attacked evaluation, headless unless --render
+    parser.add_argument("--render", action="store_true")
+    parser.add_argument("--attack", choices=list(ATTACK_BUILDERS), default=None)  # headless attacked evaluation
     parser.add_argument("--attack-eps", "--epsilon", dest="attack_eps", type=_epsilon, nargs="+", default=None)  # default 1x and 3x the checkpoint's eps_final
     parser.add_argument("--attacked-agents", type=_attacked_agents, default="all")  # a count or "all"
     parser.add_argument("--seed", type=int, default=0)  # only with --attack

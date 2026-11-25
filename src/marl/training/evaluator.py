@@ -61,7 +61,7 @@ class EpisodeResult(NamedTuple):
 
 
 def evaluate_attacked(args: Namespace) -> dict:
-    """Evaluation under the attack; prints and logs the results and optionally saves them."""
+    """Headless evaluation under the attack; prints and logs the results and optionally saves them."""
     checkpoint: dict = torch.load(args.eval, map_location="cpu")
     n_agents: int = _checked_agent_count(checkpoint)
     attacked_agents: int = _attacked_count(args.attacked_agents, n_agents)
@@ -69,7 +69,6 @@ def evaluate_attacked(args: Namespace) -> dict:
         raise ValueError(f"--eval-episodes must be at least 1, got {args.eval_episodes}")
     if args.out and not Path(args.out).resolve().parent.is_dir():
         raise ValueError(f"--out directory does not exist: {Path(args.out).parent}")
-    _check_rendering(args, checkpoint)
 
     attacked_cars: list[list[int]] = attacked_cars_per_episode(
         n_agents, attacked_agents, args.eval_episodes, args.seed
@@ -90,9 +89,7 @@ def evaluate_attacked(args: Namespace) -> dict:
         "results": [],
     }
 
-    player: DqnPlayer = _builder_for(ATTACK_ALGORITHM)(
-        checkpoint, render=args.render, render_agents=args.render_agents
-    )
+    player: DqnPlayer = _builder_for(ATTACK_ALGORITHM)(checkpoint, render=False)
     writer = create_attack_writer(args.logdir, args.run_name)
     try:
         for epsilon in epsilons:
@@ -137,20 +134,6 @@ def _attacked_count(requested: int | str, n_agents: int) -> int:
     if not 0 <= count <= n_agents:
         raise ValueError(f"--attacked-agents must be between 0 and {n_agents}, got {count}")
     return count
-
-
-def _check_rendering(args: Namespace, checkpoint: dict) -> None:
-    """Attacked rendering is highway only, with at most one view per car."""
-    if not args.render:
-        return
-    env_name: str = checkpoint.get("dqn_env", "highway")
-    if env_name != "highway":
-        raise ValueError(f"--render with --attack only supports highway, got {env_name}")
-    n_agents: int = checkpoint["n_agents"]
-    if not 1 <= args.render_agents <= n_agents:
-        raise ValueError(
-            f"--render-agents must be between 1 and {n_agents}, got {args.render_agents}"
-        )
 
 
 def _attack_epsilons(

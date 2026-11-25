@@ -716,7 +716,6 @@ class DqnPlayer(PolicyPlayer):
         env_name: str = "highway",
         reward_function: str = "mean",
         render: bool = True,
-        render_agents: int = 1,
     ) -> None:
         self._n_agents: int = n_agents
         self._obs_dim: int = obs_dim
@@ -727,7 +726,6 @@ class DqnPlayer(PolicyPlayer):
             render_mode="human" if render else None,
             name=env_name,
             reward_function=reward_function,
-            render_agents=render_agents,
         )
         self._policy: BoundedModule = _build_robust_q(
             obs_dim + n_agents, n_actions, hidden, self._device
@@ -758,7 +756,6 @@ class DqnPlayer(PolicyPlayer):
 
     def start_episode(self, seed: int | None = None) -> None:
         self._obs = flatten_obs(self._env.reset(seed=seed)[0])
-        self._mark_attacked_cars()
         self._attacked_decisions = 0
         self._changed_decisions = 0
 
@@ -779,18 +776,6 @@ class DqnPlayer(PolicyPlayer):
 
     def close(self) -> None:
         self._env.close()
-
-    def _mark_attacked_cars(self) -> None:
-        """Highlight the attacked cars; a reset creates new, unmarked cars."""
-        set_attacked_agents = getattr(self._env.unwrapped, "set_attacked_agents", None)
-        if set_attacked_agents is not None:
-            set_attacked_agents(self._attacked_cars())
-
-    def _attacked_cars(self) -> list[int]:
-        """Indices of the cars under attack; none at epsilon 0."""
-        if self._attack is None or self._attacked_mask is None or self._attack_epsilon == 0.0:
-            return []
-        return self._attacked_mask.nonzero().flatten().tolist()
 
     @torch.no_grad()
     def _greedy_actions(self, obs: np.ndarray) -> list[int]:
@@ -819,9 +804,7 @@ class DqnPlayer(PolicyPlayer):
         return actions
 
 
-def build_dqn_player(
-    checkpoint: dict, render: bool = True, render_agents: int = 1
-) -> DqnPlayer:
+def build_dqn_player(checkpoint: dict, render: bool = True) -> DqnPlayer:
     player = DqnPlayer(
         checkpoint["n_agents"],
         checkpoint["obs_dim"],
@@ -829,7 +812,6 @@ def build_dqn_player(
         checkpoint["hidden"],
         env_name=checkpoint.get("dqn_env", "highway"),
         render=render,
-        render_agents=render_agents,
     )
     player.load_weights(checkpoint["robust_q"])
     return player

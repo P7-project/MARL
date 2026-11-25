@@ -15,7 +15,7 @@ The observation attack is selected with `--attack`:
 | Value | Description |
 |---|---|
 | not given | No attack. The trained policy is shown in windows. |
-| `minbest` | MinBest (FGSM): one gradient step that makes the car's best action less likely. Runs without a window unless `--render` is given. |
+| `minbest` | MinBest (FGSM): one gradient step that makes the car's best action less likely. Runs without windows. |
 
 MinBest moves each feature by at most ε and then clips it to [-1, 1].
 
@@ -36,9 +36,6 @@ uv run --locked python scripts/evaluate.py --checkpoint woca_dqn.pt --attack min
 # Custom epsilons
 uv run --locked python scripts/evaluate.py --checkpoint woca_dqn.pt --attack minbest --epsilon 0.01 0.03 0.05 --episodes 100
 
-# Show one window with a view of each of the first 3 cars; attacked cars are outlined in red
-uv run --locked python scripts/evaluate.py --checkpoint woca_dqn.pt --attack minbest --attacked-agents 1 --render --render-agents 3 --episodes 2
-
 # Save the results as JSON
 uv run --locked python scripts/evaluate.py --checkpoint woca_dqn.pt --attack minbest --attacked-agents 1 --episodes 100 --out results.json
 ```
@@ -52,8 +49,7 @@ uv run --locked python scripts/evaluate.py --checkpoint woca_dqn.pt --attack min
 | `--checkpoint` (or `--eval`) | Required | Path to a WocaR-DQN or MAPPO checkpoint (see the table above). |
 | `--episodes` (or `--eval-episodes`) | 1000 with `--attack`, otherwise 5 | Number of evaluation episodes: per epsilon with `--attack`, otherwise per window. |
 | `--eval-windows` | 3 | Number of windows. Only without `--attack`. |
-| `--render` | off | With `--attack`: show one window (highway only). Has no effect otherwise (see Rendering). |
-| `--render-agents` | 1 | Only with `--attack` and `--render`. Number of views in the window, from 1 to the number of cars. |
+| `--render` | off | Accepted but has no effect (see Rendering). |
 | `--seed` | 0 | Only with `--attack`. Seeds the environment and the choice of attacked cars. |
 
 ### Observation attack
@@ -83,7 +79,7 @@ With `--attacked-agents 0`, `--epsilon` is ignored and there is one result, with
 
 ## Rendering
 
-Without `--attack`, windows are always shown, with or without `--render`:
+Rendering is only available without `--attack`, and is then always on, with or without `--render`:
 
 ```bash
 # Three windows, two episodes each
@@ -92,18 +88,7 @@ uv run --locked python scripts/evaluate.py --checkpoint woca_dqn.pt --eval-windo
 
 Each window runs its own environment with all cars and prints the steps, return and crash of each episode. The episodes are not seeded.
 
-With `--attack`, no window is opened by default and `--eval-windows` is ignored. `--render` opens one window, for all epsilons and episodes in turn:
-
-```bash
-# One attacked car per episode, with a view of each of the 3 cars
-uv run --locked python scripts/evaluate.py --checkpoint woca_dqn.pt --attack minbest --attacked-agents 1 --render --render-agents 3 --episodes 2
-```
-
-- Attacked cars are outlined in red. No car is outlined with `--attacked-agents 0` or at epsilon 0. The very first frame of an episode has no outlines yet.
-- `--render-agents N` shows one view per car for the first N cars. An attacked car outside these views is not visible, so use the number of cars to see all of them.
-- A crashed car is filled in light red, which is not an attack outline.
-- It only works for highway checkpoints; others give an error.
-- Rendering does not change the results. Pass a small `--episodes`, since the default with `--attack` is 1000.
+With `--attack` no window is opened, and `--render` and `--eval-windows` are ignored.
 
 ## Outputs
 
