@@ -336,6 +336,89 @@ def test_duration_truncates_without_crash(team_env):
         assert not any(info["agents_crashed"])
 
 
+@pytest.fixture
+def per_agent_env() -> Iterator[gym.Env]:
+    env = make_env(3, per_agent_termination=True)
+    env.reset(seed=0, options={"config": {"vehicles_count": 0, "initial_lane_id": 1}})
+    yield env
+    env.close()
+
+
+def test_per_agent_termination_is_off_by_default(team_env: gym.Env) -> None:
+    team_env.unwrapped.controlled_vehicles[0].crashed = True
+
+    _, _, terminated, _, info = team_env.step((1, 1, 1))
+
+    assert team_env.unwrapped.config["per_agent_termination"] is False
+    assert terminated is True
+    assert "agents_terminated" not in info
+
+
+def test_per_agent_termination_does_not_change_rewards_or_observations() -> None:
+    config = {"vehicles_count": 10, "duration": 5}
+    shared = make_env(3)
+    per_agent = make_env(3, per_agent_termination=True)
+    try:
+        shared_obs, _ = shared.reset(seed=3, options={"config": config})
+        per_agent_obs, _ = per_agent.reset(seed=3, options={"config": config})
+        np.testing.assert_array_equal(shared_obs, per_agent_obs)
+        for action in [(3, 1, 0), (1, 4, 2), (0, 1, 3), (1, 1, 1), (2, 0, 4)]:
+            shared_obs, shared_rewards, shared_terminated, _, _ = shared.step(action)
+            per_agent_obs, per_agent_rewards, per_agent_terminated, _, _ = (
+                per_agent.step(action)
+            )
+            np.testing.assert_array_equal(shared_obs, per_agent_obs)
+            assert shared_rewards == per_agent_rewards
+            assert shared_terminated == any(per_agent_terminated)
+            if shared_terminated:
+                break
+    finally:
+        shared.close()
+        per_agent.close()
+
+
+def test_per_agent_termination_ends_only_the_crashed_car(per_agent_env: gym.Env) -> None:
+    team = per_agent_env.unwrapped
+    team.controlled_vehicles[0].crashed = True
+
+    for _ in range(2):
+        _, _, terminated, truncated, info = per_agent_env.step((1, 1, 1))
+        assert terminated == (True, False, False)
+        assert info["agents_terminated"] == terminated
+        assert not truncated
+        assert not team._is_terminated()
+        # The crashed car stays on the road.
+        assert team.controlled_vehicles[0] in team.road.vehicles
+
+
+def test_per_agent_termination_ends_the_episode_when_every_car_crashed(
+    per_agent_env: gym.Env,
+) -> None:
+    team = per_agent_env.unwrapped
+    team.controlled_vehicles[0].crashed = True
+    _, _, terminated, _, _ = per_agent_env.step((1, 1, 1))
+    assert terminated == (True, False, False)
+
+    team.controlled_vehicles[1].crashed = True
+    team.controlled_vehicles[2].crashed = True
+    _, _, terminated, truncated, info = per_agent_env.step((1, 1, 1))
+
+    assert terminated == (True, True, True)
+    assert info["agents_terminated"] == terminated
+    assert team._is_terminated()
+    assert not truncated
+
+
+def test_per_agent_termination_truncates_at_the_time_limit(per_agent_env: gym.Env) -> None:
+    per_agent_env.unwrapped.configure({"duration": 2})
+    per_agent_env.unwrapped.controlled_vehicles[1].crashed = True
+
+    for step in range(2):
+        _, _, terminated, truncated, _ = per_agent_env.step((1, 1, 1))
+        assert terminated == (False, True, False)
+        assert truncated == (step == 1)
+
+
 def _mixed_rewards(raw_rewards: tuple[float, ...], team_weight: float) -> list[float]:
     """Reference implementation of the team mixing formula."""
     total = sum(raw_rewards)

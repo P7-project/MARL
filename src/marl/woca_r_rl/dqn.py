@@ -49,7 +49,13 @@ from argparse import Namespace
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
-from ..env import any_vehicle_crashed, build_actor_obs, flatten_obs, make_env
+from ..env import (
+    any_vehicle_crashed,
+    build_actor_obs,
+    crashed_vehicle_fraction,
+    flatten_obs,
+    make_env,
+)
 
 from functools import partial
 
@@ -495,11 +501,13 @@ def train_dqn(args: Namespace, console: Console) -> None:
 
         n_agents: int = args.agents
         env_name: str = getattr(args, "dqn_env", "highway")
+        per_agent_termination: bool = getattr(args, "per_agent_termination", False)
         env = make_env(
             n_agents,
             name=env_name,
             reward_function=args.reward,
             team_weight=args.team_weight,
+            per_agent_termination=per_agent_termination,
         )
 
         observation_space = env.observation_space
@@ -529,11 +537,14 @@ def train_dqn(args: Namespace, console: Console) -> None:
                 env_name,
                 args.reward,
                 args.team_weight,
+                per_agent_termination,
             ),
         )
 
         obs: np.ndarray = flatten_obs(env.reset(seed=args.seed)[0])
         episode_return: float = 0.0
+        # Cars that have not terminated yet this episode; only they store transitions.
+        alive: np.ndarray = np.ones(n_agents, dtype=np.bool_)
 
     with console.status(f"[bold green]Training WocaR-DQN (0/{args.total_steps})...") as training_status:
         for step in range(args.total_steps):
@@ -561,26 +572,25 @@ def train_dqn(args: Namespace, console: Console) -> None:
                     f"got {agent_terminated.size}"
                 )
 
-            episode_done: bool = bool(agent_terminated.all()) or bool(
-                np.asarray(truncated, dtype=np.bool_).any()
-            )
             next_obs = flatten_obs(next_obs)
             # Built before any reset, so it is the real next observation.
             next_actor_obs: Tensor = _to_tensor(build_actor_obs(next_obs, n_agents), device)
 
-            for agent in range(n_agents):
-                buffer.add(
-                    actor_obs[agent],
-                    actions[agent],
-                    float(agent_rewards[agent]),
-                    next_actor_obs[agent],
-                    float(agent_terminated[agent]),
-                )
-
-            episode_return += float(agent_rewards.mean())
+            # Cars dead before this step add 0; with every car alive this is the plain mean.
+            episode_return += float((agent_rewards * alive).mean())
+            alive = _add_alive_transitions(
+                buffer, alive, actor_obs, actions, agent_rewards, next_actor_obs, agent_terminated
+            )
+            episode_done: bool = not alive.any() or bool(
+                np.asarray(truncated, dtype=np.bool_).any()
+            )
             if episode_done:
                 writer.add_scalar("episode/return", episode_return, step)
+                writer.add_scalar(
+                    "episode/crashed_fraction", crashed_vehicle_fraction(env), step
+                )
                 episode_return = 0.0
+                alive = np.ones(n_agents, dtype=np.bool_)
                 next_obs = flatten_obs(env.reset()[0])
             obs = next_obs
 
@@ -613,6 +623,7 @@ def train_dqn(args: Namespace, console: Console) -> None:
                     "dqn_env": env_name,
                     "reward_function": args.reward,
                     "team_weight": float(env.unwrapped.config["team_reward_weight"]),
+                    "per_agent_termination": per_agent_termination,
                 },
                 args.save,
             )
@@ -667,6 +678,32 @@ def _build_robust_q(input_dim: int, n_actions: int, hidden: int, device: torch.d
         torch.zeros(1, input_dim, device=device),
         device=device.type,
     )
+
+
+def _add_alive_transitions(
+    buffer: ReplayBuffer,
+    alive: np.ndarray,
+    actor_obs: Tensor,
+    actions: list[int],
+    agent_rewards: np.ndarray,
+    next_actor_obs: Tensor,
+    agent_terminated: np.ndarray,
+) -> np.ndarray:
+    """Store one transition per car still alive at the start of the step; return who is alive after it.
+
+    A car's terminal step is stored (terminated = 1); after that it stores nothing
+    until the next episode, although the env still needs an action for it.
+    """
+    for agent in range(len(alive)):
+        if alive[agent]:
+            buffer.add(
+                actor_obs[agent],
+                actions[agent],
+                float(agent_rewards[agent]),
+                next_actor_obs[agent],
+                float(agent_terminated[agent]),
+            )
+    return alive & ~agent_terminated
 
 
 def _select_actions(trainer: WocaRDQNTrainer, actor_obs: Tensor, exploration_probability: float) -> list[int]:
@@ -730,6 +767,7 @@ class DqnPlayer(PolicyPlayer):
         env_name: str = "highway",
         reward_function: str = "mean",
         team_weight: float | None = None,
+        per_agent_termination: bool = False,
     ) -> None:
         self._n_agents: int = n_agents
         self._device: torch.device = torch.device("cpu")
@@ -739,6 +777,7 @@ class DqnPlayer(PolicyPlayer):
             name=env_name,
             reward_function=reward_function,
             team_weight=team_weight,
+            per_agent_termination=per_agent_termination,
         )
         self._policy: BoundedModule = _build_robust_q(
             obs_dim + n_agents, n_actions, hidden, self._device
@@ -783,6 +822,7 @@ def build_dqn_player(checkpoint: dict) -> PolicyPlayer:
         env_name=checkpoint.get("dqn_env", "highway"),
         reward_function=checkpoint.get("reward_function", "mean"),
         team_weight=checkpoint.get("team_weight"),
+        per_agent_termination=checkpoint.get("per_agent_termination", False),
     )
     player.load_weights(checkpoint["robust_q"])
     return player

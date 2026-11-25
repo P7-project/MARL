@@ -23,14 +23,20 @@ DEFAULT_INTERSECTION_TEAM_WEIGHT: float = 0.1
 
 
 class TeamHighwayEnv(HighwayEnv):
-    """Highway driving with one reward per controlled vehicle and a shared episode outcome."""
+    """Highway driving with one reward per controlled vehicle.
+
+    By default the episode outcome is shared: any crash ends the episode for every
+    vehicle. With ``per_agent_termination`` each vehicle gets its own terminated
+    flag and the episode ends once every vehicle is terminated (or at the time limit).
+    """
 
     @classmethod
     def default_config(cls) -> dict[str, Any]:
-        """HighwayEnv's config plus the reward function name and its team weight."""
+        """HighwayEnv's config plus the reward function name, its team weight and the termination mode."""
         config: dict[str, Any] = super().default_config()
         config["reward_function"] = "team"
         config["team_reward_weight"] = DEFAULT_HIGHWAY_TEAM_WEIGHT
+        config["per_agent_termination"] = False
         return config
 
     def configure(self, config: dict) -> None:
@@ -39,8 +45,15 @@ class TeamHighwayEnv(HighwayEnv):
         self.reward_function = get_reward_function(self.config["reward_function"])
 
     def step(self, action) -> tuple:
-        """HighwayEnv.step, but the reward is one value per controlled vehicle."""
+        """HighwayEnv.step, but the reward is one value per controlled vehicle.
+
+        With ``per_agent_termination`` the terminated flag is one bool per controlled
+        vehicle, also stored in ``info["agents_terminated"]``.
+        """
         obs, _reward, terminated, truncated, info = super().step(action)
+        if self.config["per_agent_termination"]:
+            terminated = self._agents_terminated()
+            info["agents_terminated"] = terminated
         return obs, self._last_vehicle_rewards, terminated, truncated, info
 
     def _reward(self, action) -> float:
@@ -102,12 +115,18 @@ class TeamHighwayEnv(HighwayEnv):
             float(self._agent_reward(vehicle)) for vehicle in self.controlled_vehicles
         )
 
-    def _is_terminated(self) -> bool:
-        """The episode is over if any controlled vehicle crashed or, if configured, left the road."""
-        return any(
-            vehicle.crashed or (self.config["offroad_terminal"] and not vehicle.on_road)
+    def _agents_terminated(self) -> tuple[bool, ...]:
+        """One flag per controlled vehicle: it crashed or, if configured, left the road."""
+        return tuple(
+            bool(vehicle.crashed or (self.config["offroad_terminal"] and not vehicle.on_road))
             for vehicle in self.controlled_vehicles
         )
+
+    def _is_terminated(self) -> bool:
+        """The episode is over if any controlled vehicle is terminated, or all of them with per_agent_termination."""
+        if self.config["per_agent_termination"]:
+            return all(self._agents_terminated())
+        return any(self._agents_terminated())
 
     def _info(self, obs, action=None) -> dict:
         """Report team values under the standard keys and per-vehicle values under agents_*."""
@@ -176,13 +195,17 @@ def make_env(
     name: str = "highway",
     reward_function: str = "team",
     team_weight: float | None = None,
+    per_agent_termination: bool = False,
 ) -> gym.Env:
+    """Build a driving env; ``per_agent_termination`` only applies to highway (intersection always ends per agent)."""
     if team_weight is not None and (team_weight < 0.0 or team_weight > 1.0):
         raise ValueError(f"team_weight must be in [0, 1], got {team_weight}")
     if name == "intersection":
         return make_intersection_env(n_agents, render_mode, reward_function, team_weight)
     if name == "highway":
-        return make_highway_env(n_agents, render_mode, reward_function, team_weight)
+        return make_highway_env(
+            n_agents, render_mode, reward_function, team_weight, per_agent_termination
+        )
     raise ValueError(f"Unknown environment: {name}")
 
 
@@ -206,10 +229,12 @@ def make_highway_env(
     render_mode: str | None = None,
     reward_function: str = "team",
     team_weight: float | None = None,
+    per_agent_termination: bool = False,
 ) -> gym.Env:
     config: dict[str, Any] = {
         "controlled_vehicles": n_agents,
         "reward_function": reward_function,
+        "per_agent_termination": per_agent_termination,
         "observation": {
             "type": "MultiAgentObservation",
             "observation_config": {
@@ -245,6 +270,13 @@ def flatten_obs(obs) -> np.ndarray:
 def any_vehicle_crashed(env: gym.Env) -> bool:
     unwrapped: Any = env.unwrapped  # highway-env specific attributes are unknown to the type checker
     return any(vehicle.crashed for vehicle in unwrapped.controlled_vehicles)
+
+
+def crashed_vehicle_fraction(env: gym.Env) -> float:
+    """Fraction of the controlled vehicles that have crashed."""
+    unwrapped: Any = env.unwrapped  # highway-env specific attributes are unknown to the type checker
+    vehicles = unwrapped.controlled_vehicles
+    return sum(vehicle.crashed for vehicle in vehicles) / len(vehicles)
 
 
 def build_actor_obs(obs_flat: np.ndarray, n_agents: int) -> np.ndarray:
