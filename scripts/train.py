@@ -6,6 +6,7 @@ from enum import Enum
 from pathlib import Path
 
 from rich.console import Console
+from config_argument_parser import ConfigArgumentParser
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -26,8 +27,8 @@ class UpdateFunction(Enum):
 
 
 def main() -> None:
-    parser: argparse.ArgumentParser = build_parser()
-    args: argparse.Namespace = parser.parse_args()
+    parser: ConfigArgumentParser = build_parser()
+    args: argparse.Namespace = parser.parse()
     args.run_name = args.run_name or build_default_run_name(args.update_function)
     
     if args.update_function == UpdateFunction.wocar_ppo.value:
@@ -40,9 +41,10 @@ def main() -> None:
         raise NotImplementedError(f"Update function {args.update_function} is not implemented!")
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser() -> ConfigArgumentParser:
     parser = argparse.ArgumentParser()
     add_render_arguments(parser)
+    parser.add_argument("--config", type=Path, default=None)
     parser.add_argument("--agents", type=int, default=3)
     parser.add_argument("--total-steps", type=int, default=200_000)
     parser.add_argument("--rollout", type=int, default=512, help="joint env steps per update")
@@ -113,7 +115,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--explore-steps", type=int, default=50_000)  # env steps over which the exploration probability decays
     parser.add_argument("--explore-final", type=float, default=0.05)  # final epsilon-greedy exploration probability
     parser.add_argument("--lr", type=float, default=1e-4) 
-    return parser
+
+    return ConfigArgumentParser(parser)
 
 
 def get_default_save_name(save_directory: Path = Path(".")) -> str:
