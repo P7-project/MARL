@@ -8,17 +8,33 @@ from highway_env import utils
 from highway_env.envs.highway_env import HighwayEnv
 from highway_env.vehicle.controller import ControlledVehicle
 
+from .reward_funcs import get_reward_function
+
 
 class TeamHighwayEnv(HighwayEnv):
-    """Highway driving with one reward and episode outcome shared by all controlled vehicles."""
+    """Highway driving with one reward per controlled vehicle and a shared episode outcome."""
+
+    @classmethod
+    def default_config(cls) -> dict:
+        """HighwayEnv's config plus the name of the reward function (see marl.reward_funcs)."""
+        config = super().default_config()
+        config["reward_function"] = "mean"
+        return config
+
+    def configure(self, config: dict) -> None:
+        """HighwayEnv.configure, then build the configured reward function (fails early on a bad name)."""
+        super().configure(config)
+        self.reward_function = get_reward_function(self.config["reward_function"])
+
+    def step(self, action) -> tuple:
+        """HighwayEnv.step, but the reward is one value per controlled vehicle."""
+        obs, _reward, terminated, truncated, info = super().step(action)
+        return obs, self._last_vehicle_rewards, terminated, truncated, info
 
     def _reward(self, action) -> float:
-        """Average the per-vehicle driving reward over all controlled vehicles."""
-        return float(
-            np.mean(
-                [self._agent_reward(vehicle) for vehicle in self.controlled_vehicles]
-            )
-        )
+        """Run the reward function once for this step, store the per-vehicle rewards and return their mean."""
+        self._last_vehicle_rewards = self.reward_function(self)
+        return float(np.mean(self._last_vehicle_rewards))
 
     def _rewards(self, action) -> dict[str, float]:
         """Average each reward term over all controlled vehicles."""
@@ -91,11 +107,16 @@ class TeamHighwayEnv(HighwayEnv):
 
 gym.register(id="team-highway-v0", entry_point=TeamHighwayEnv)
 
-def make_env(n_agents: int = 3, render_mode=None, name: str = "highway",) -> gym.Env:
+def make_env(
+    n_agents: int = 3,
+    render_mode=None,
+    name: str = "highway",
+    reward_function: str = "mean",
+) -> gym.Env:
     if name == "intersection":
         return make_intersection_env(n_agents, render_mode)
     if name == "highway":
-        return make_highway_env(n_agents, render_mode)
+        return make_highway_env(n_agents, render_mode, reward_function)
     raise ValueError(f"Unknown environment: {name}")
 
 
@@ -107,9 +128,12 @@ def make_intersection_env(n_agents: int = 3, render_mode=None) -> gym.Env:
     )
 
 
-def make_highway_env(n_agents: int = 3, render_mode=None) -> gym.Env:
+def make_highway_env(
+    n_agents: int = 3, render_mode=None, reward_function: str = "mean"
+) -> gym.Env:
     config = {
         "controlled_vehicles": n_agents,
+        "reward_function": reward_function,
         "observation": {
             "type": "MultiAgentObservation",
             "observation_config": {
