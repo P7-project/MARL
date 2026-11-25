@@ -67,8 +67,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--reward",
         choices=list(REWARD_FUNCTIONS),
-        default="mean",
-        help="Reward function for the highway env (marl.reward_funcs)",
+        default="team",
+        help="Reward function for the multi-agent environments (marl.reward_funcs)",
+    )
+    parser.add_argument(
+        "--team-weight",
+        type=float,
+        default=None,
+        help=(
+            "Weight of the teammates' mean reward in each agent's reward, in [0, 1] "
+            "(default: 0.25 for highway, 0.1 for intersection)"
+        ),
     )
     parser.add_argument("--kappa-reg", type=float, default=0.1) # Weight of the regularizer term in the actor loss. The paper grid-searches {0.01, 0.03, 0.1, 0.3, 1.0}. "where κ_wst and κ_reg are hyperparameters balancing between natural performance and robustness"
     parser.add_argument("--eps-final", type=float, default=0.075) # Final attack radius ε, the value epsilon_schedule ramps to.    
