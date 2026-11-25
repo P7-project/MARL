@@ -1,0 +1,10 @@
+{
+  "update_function": "wocar_dqn",
+  "dqn_env": "highway",
+  "agents": 3,
+  "total_steps": 200000,
+  "warmup": 5000,
+  "save": "woca_dqn.pt",
+  "eps_final": 0.01,
+  "kappa_reg": 0.01
+}
