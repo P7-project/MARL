@@ -308,7 +308,6 @@ def test_bounds_propagate_gradients_to_the_bounded_network() -> None:
 
     assert _has_nonzero_gradient(bounded)
 
-
 # --------------------------------------------------------------------------- #
 # WocaRDQNTrainer: hand-computed values with constant networks
 # --------------------------------------------------------------------------- #
@@ -317,95 +316,50 @@ def test_bounds_propagate_gradients_to_the_bounded_network() -> None:
 def test_update_losses_match_hand_computed_values() -> None:
     """
         Constant networks and learning rate 0 make every reported loss exact.
-        Q_r = [0.5, 0.1, 0.2], Q_phi = [0, -1, 5], the target Q_r' is the copy
-        made at construction, kappa_wst = 0.5, worst_mix_ratio = 0.5.
+        Q_v = [1, 0, 0.4], Q_r = [0.5, 0.1, 0.2], Q_phi = [0, -1, 5], eps = 0,
+        kappa_wst = 0.25. The soft update leaves Q_v' equal to Q_v. Taken action 1,
+        rewards [1, 0, -1, 2], terminated [0, 0, 1, 0], gamma 0.9.
     """
-    trainer, _ = _make_constant_trainer(
+    trainer = _make_constant_trainer(
+        vanilla_values=[1.0, 0.0, 0.4],
         robust_values=[0.5, 0.1, 0.2],
         worst_attack_values=[0.0, -1.0, 5.0],
         regularizer_margin=0.5,
-        final_kappa_wst=0.5,
-        worst_mix_ratio=0.5,
+        final_kappa_wst=0.25,
     )
     batch = _make_batch(
         rewards=[1.0, 0.0, -1.0, 2.0],
         terminated=[0.0, 0.0, 1.0, 0.0],
     )
-    not_terminated = 1.0 - batch.terminated
 
     metrics = trainer.update(batch, step=100)
 
-    # Mixed next values: 0.5 * [0.5, 0.1, 0.2] + 0.5 * [0, -1, 5] = [0.25, -0.45, 2.6].
-    # The mixed argmax is action 2, and the target value is Q_r'(s', 2) = 0.2.
-    robust_targets = batch.rewards + DISCOUNT * not_terminated * 0.2
-    expected_td = nn.functional.smooth_l1_loss(
-        torch.full((BATCH_SIZE,), 0.1), robust_targets
-    )
-    # Bounds are exact, so only the taken action (1) can deviate from its reference.
-    taken_deviation = (0.1 - robust_targets).abs()
-    expected_worst_case = torch.minimum(taken_deviation.pow(2), taken_deviation).mean()
-    # L_reg: a* = 0; margins to actions 1 and 2 are 0.4 and 0.3, so -min = -0.3.
-    # w(s) = 1 because every state has spread 0.4.
+    # Q_v: y = r + 0.9 * max Q_v' = r + 0.9 * 1 on live states = [1.9, 0.9, -1, 2.9].
+    # Prediction Q_v(s, 1) = 0: (1.9^2 + 0.9^2 + 1^2 + 2.9^2) / 4 = 13.83 / 4.
+    expected_vanilla = 3.4575
+    # Q_phi: eps 0 gives A_adv_hat = {argmax Q_r} = {0}, so y = r + 0.9 * Q_phi(s', 0) = r.
+    # Prediction Q_phi(s, 1) = -1: (2^2 + 1^2 + 0^2 + 3^2) / 4 = 14 / 4.
+    expected_worst_attack = 3.5
+    # Q_r: mix = 0.75 * [1, 0, 0.4] + 0.25 * [0, -1, 5] = [0.75, -0.25, 1.55], max 1.55.
+    # y = r + 0.9 * 1.55 on live states = [2.395, 1.395, -1, 3.395]; prediction Q_r(s, 1) = 0.1.
+    # (2.295^2 + 1.295^2 + 1.1^2 + 3.295^2) / 4 = 19.011075 / 4.
+    expected_td = 4.75276875
+    # L_reg: a* = 0; exact margins to actions 1 and 2 are 0.4 and 0.3, so -min = -0.3 > -0.5.
+    # w(s) = 1 because every state has the same Q_v spread 1.
     expected_regularizer = -0.3
 
-    # Q_phi: radius 0 gives A_adv_hat = {0}; min Q_phi(s', 0) = 0.
-    worst_attack_targets = batch.rewards + DISCOUNT * not_terminated * 0.0
-    expected_worst_attack = nn.functional.smooth_l1_loss(
-        torch.full((BATCH_SIZE,), -1.0), worst_attack_targets
-    )
-
-    assert metrics.robust_td_loss == pytest.approx(float(expected_td), abs=TOLERANCE)
-    assert metrics.worst_case_loss == pytest.approx(float(expected_worst_case), abs=TOLERANCE)
+    assert metrics.vanilla_loss == pytest.approx(expected_vanilla, abs=TOLERANCE)
+    assert metrics.worst_attack_loss == pytest.approx(expected_worst_attack, abs=TOLERANCE)
+    assert metrics.robust_td_loss == pytest.approx(expected_td, abs=TOLERANCE)
     assert metrics.regularizer_loss == pytest.approx(expected_regularizer, abs=TOLERANCE)
-    assert metrics.worst_attack_loss == pytest.approx(float(expected_worst_attack), abs=TOLERANCE)
     assert metrics.mean_reachable_actions == pytest.approx(1.0)
-    assert (metrics.epsilon, metrics.worst_epsilon) == pytest.approx((0.0, 0.0))
-    assert metrics.worst_kappa == pytest.approx(0.5)
-
-
-def test_robust_target_bootstraps_from_the_target_network_at_the_mixed_argmax() -> None:
-    trainer, _ = _make_constant_trainer(
-        robust_values=[0.5, 0.1, 0.2],
-        worst_attack_values=[10.0, 0.0, 0.0],
-        worst_mix_ratio=0.5,
-    )
-    batch = _make_batch(
-        rewards=[1.0, 0.0, -1.0, 2.0],
-        terminated=[0.0, 0.0, 0.0, 0.0],
-    )
-
-    metrics = trainer.update(batch, step=100)
-
-    # Mix = [5.25, 0.05, 0.1], argmax 0, and the bootstrap value is Q_r'(s', 0) = 0.5
-    # (not the mixed value 5.25).
-    robust_targets = batch.rewards + DISCOUNT * 0.5
-    expected = nn.functional.smooth_l1_loss(torch.full((BATCH_SIZE,), 0.1), robust_targets)
-
-    assert metrics.robust_td_loss == pytest.approx(float(expected), abs=TOLERANCE)
-
-
-def test_worst_mix_ratio_one_uses_the_worst_attack_argmax() -> None:
-    trainer, _ = _make_constant_trainer(
-        robust_values=[0.5, 0.1, 0.2],
-        worst_attack_values=[0.0, 10.0, 0.0],
-        worst_mix_ratio=1.0,
-    )
-    batch = _make_batch(
-        rewards=[1.0, 0.0, -1.0, 2.0],
-        terminated=[0.0, 0.0, 0.0, 0.0],
-    )
-
-    metrics = trainer.update(batch, step=100)
-
-    # Argmax of Q_phi is action 1, so the bootstrap value is Q_r'(s', 1) = 0.1.
-    robust_targets = batch.rewards + DISCOUNT * 0.1
-    expected = nn.functional.smooth_l1_loss(torch.full((BATCH_SIZE,), 0.1), robust_targets)
-
-    assert metrics.robust_td_loss == pytest.approx(float(expected), abs=TOLERANCE)
+    assert metrics.epsilon == pytest.approx(0.0)
+    assert metrics.kappa_wst == pytest.approx(0.25)
 
 
 def test_terminal_transitions_ignore_every_next_state_value() -> None:
-    trainer, _ = _make_constant_trainer(
+    trainer = _make_constant_trainer(
+        vanilla_values=[1.0, 0.0, 0.4],
         robust_values=[0.5, 0.1, 0.2],
         worst_attack_values=[0.0, -1.0, 5.0],
     )
@@ -416,40 +370,15 @@ def test_terminal_transitions_ignore_every_next_state_value() -> None:
 
     metrics = trainer.update(batch, step=100)
 
-    expected_td = nn.functional.smooth_l1_loss(
-        torch.full((BATCH_SIZE,), 0.1), batch.rewards
-    )
-    expected_worst_attack = nn.functional.smooth_l1_loss(
+    expected_vanilla = nn.functional.mse_loss(torch.full((BATCH_SIZE,), 0.0), batch.rewards)
+    expected_td = nn.functional.mse_loss(torch.full((BATCH_SIZE,), 0.1), batch.rewards)
+    expected_worst_attack = nn.functional.mse_loss(
         torch.full((BATCH_SIZE,), -1.0), batch.rewards
     )
 
+    assert metrics.vanilla_loss == pytest.approx(float(expected_vanilla), abs=TOLERANCE)
     assert metrics.robust_td_loss == pytest.approx(float(expected_td), abs=TOLERANCE)
     assert metrics.worst_attack_loss == pytest.approx(float(expected_worst_attack), abs=TOLERANCE)
-
-
-def test_update_reports_the_scheduled_epsilon_worst_epsilon_and_worst_kappa() -> None:
-    trainer, _ = _make_constant_trainer(
-        robust_values=[0.5, 0.1, 0.2],
-        worst_attack_values=[0.0, -1.0, 5.0],
-        epsilon_schedule=RampSchedule(start_step=10, ramp_steps=10, final_value=0.2),
-        worst_epsilon_schedule=RampSchedule(start_step=5, ramp_steps=10, final_value=0.3),
-        worst_kappa_schedule=RampSchedule(start_step=10, ramp_steps=10, final_value=0.4),
-    )
-    batch = _make_batch(rewards=[0.0, 0.0, 0.0, 0.0], terminated=[0.0, 0.0, 0.0, 0.0])
-
-    before = trainer.update(batch, step=0)
-    during = trainer.update(batch, step=15)
-    after = trainer.update(batch, step=100)
-
-    assert (before.epsilon, before.worst_epsilon, before.worst_kappa) == pytest.approx(
-        (0.0, 0.0, 1.0)
-    )
-    assert (during.epsilon, during.worst_epsilon, during.worst_kappa) == pytest.approx(
-        (0.1, 0.3, 0.8)
-    )
-    assert (after.epsilon, after.worst_epsilon, after.worst_kappa) == pytest.approx(
-        (0.2, 0.3, 0.6)
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -459,12 +388,12 @@ def test_update_reports_the_scheduled_epsilon_worst_epsilon_and_worst_kappa() ->
 
 def test_update_changes_the_robust_and_worst_attack_networks() -> None:
     states = _random_states()
+    vanilla_q = _make_mlp(STATE_DIM, NUM_ACTIONS, seed=4)
     robust_q = _bound(_make_mlp(STATE_DIM, NUM_ACTIONS, seed=2), states)
-    target_q = _bound(_make_mlp(STATE_DIM, NUM_ACTIONS, seed=4), states)
     worst_attack_q = _make_mlp(STATE_DIM, NUM_ACTIONS, seed=3)
     trainer = WocaRDQNTrainer(
+        vanilla_q,
         robust_q,
-        target_q,
         worst_attack_q,
         _make_config(learning_rate=1e-2),
     )
@@ -477,54 +406,28 @@ def test_update_changes_the_robust_and_worst_attack_networks() -> None:
         assert _parameters_changed(network, snapshot)
 
 
-@pytest.mark.parametrize("target_update_every, synced", [(1, True), (10, False)])
-def test_target_network_is_hard_copied_on_the_configured_schedule(
-    target_update_every: int,
-    synced: bool,
-) -> None:
-    states = _random_states()
-    robust_q = _bound(_make_mlp(STATE_DIM, NUM_ACTIONS, seed=2), states)
-    target_q = _bound(_make_mlp(STATE_DIM, NUM_ACTIONS, seed=4), states)
-    worst_attack_q = _make_mlp(STATE_DIM, NUM_ACTIONS, seed=3)
-    trainer = WocaRDQNTrainer(
-        robust_q,
-        target_q,
-        worst_attack_q,
-        _make_config(learning_rate=1e-2, target_update_every=target_update_every),
-    )
-    target_before = _snapshot(target_q)
-    batch = _make_batch(rewards=[1.0, 0.0, -1.0, 2.0], terminated=[0.0, 0.0, 1.0, 0.0])
-
-    trainer.update(batch, step=100)
-
-    if synced:
-        for key, value in robust_q.state_dict().items():
-            assert torch.equal(value, target_q.state_dict()[key])
-    else:
-        assert not _parameters_changed(target_q, target_before)
-
-
 def test_zero_perturbation_scale_makes_the_reachable_set_a_single_action() -> None:
     states = _random_states()
     trainer = WocaRDQNTrainer(
-        _bound(_make_mlp(STATE_DIM, NUM_ACTIONS, seed=1), states),
+        _make_mlp(STATE_DIM, NUM_ACTIONS, seed=1),
         _bound(_make_mlp(STATE_DIM, NUM_ACTIONS, seed=2), states),
         _make_mlp(STATE_DIM, NUM_ACTIONS, seed=3),
         _make_config(
             epsilon_schedule=RampSchedule(start_step=0, ramp_steps=1, final_value=0.5),
             perturbation_scale=torch.zeros(STATE_DIM),
-            reachable_epsilon=None,
         ),
     )
     batch = _make_batch(rewards=[1.0, 0.0, -1.0, 2.0], terminated=[0.0, 0.0, 0.0, 0.0])
 
     metrics = trainer.update(batch, step=100)
 
+    assert metrics.epsilon == pytest.approx(0.5)
     assert metrics.mean_reachable_actions == pytest.approx(1.0)
 
 
 def test_select_action_without_exploration_is_the_greedy_action_of_the_robust_network() -> None:
-    trainer, _ = _make_constant_trainer(
+    trainer = _make_constant_trainer(
+        vanilla_values=[0.9, 0.5, 0.1],
         robust_values=[0.5, 0.1, 0.9],
         worst_attack_values=[0.0, 0.0, 0.0],
     )
@@ -535,7 +438,8 @@ def test_select_action_without_exploration_is_the_greedy_action_of_the_robust_ne
 
 
 def test_select_action_with_full_exploration_covers_the_valid_actions() -> None:
-    trainer, _ = _make_constant_trainer(
+    trainer = _make_constant_trainer(
+        vanilla_values=[0.9, 0.5, 0.1],
         robust_values=[0.5, 0.1, 0.9],
         worst_attack_values=[0.0, 0.0, 0.0],
     )
@@ -553,69 +457,45 @@ def test_select_action_with_full_exploration_covers_the_valid_actions() -> None:
 
 
 def _make_constant_trainer(
+    vanilla_values: list[float],
     robust_values: list[float],
     worst_attack_values: list[float],
     regularizer_margin: float = 0.0,
     final_kappa_wst: float = 0.5,
-    worst_mix_ratio: float = 0.5,
-    epsilon_schedule: RampSchedule | None = None,
-    worst_epsilon_schedule: RampSchedule | None = None,
-    worst_kappa_schedule: RampSchedule | None = None,
-    perturbation_scale: Tensor | None = None,
-) -> tuple[WocaRDQNTrainer, BoundedModule]:
+) -> WocaRDQNTrainer:
     """
         Trainer with constant networks (zero weights, given biases) and learning rate 0,
         so no parameter moves during update() and every loss can be computed by hand.
-        Returns the trainer and the online robust Q network.
     """
-    if worst_kappa_schedule is None:
-        worst_kappa_schedule = RampSchedule(
-            start_step=0, ramp_steps=1, final_value=final_kappa_wst
-        )
+    vanilla_q = _constant_network(vanilla_values)
     robust_q = _bound(_constant_network(robust_values), _random_states())
-    target_q = _bound(_constant_network(robust_values), _random_states())
     worst_attack_q = _constant_network(worst_attack_values)
     config = _make_config(
         learning_rate=0.0,
         regularizer_margin=regularizer_margin,
-        worst_mix_ratio=worst_mix_ratio,
-        epsilon_schedule=epsilon_schedule,
-        worst_epsilon_schedule=worst_epsilon_schedule,
-        worst_kappa_schedule=worst_kappa_schedule,
-        perturbation_scale=perturbation_scale,
+        kappa_wst_schedule=RampSchedule(start_step=0, ramp_steps=1, final_value=final_kappa_wst),
     )
-    return WocaRDQNTrainer(robust_q, target_q, worst_attack_q, config), robust_q
+    return WocaRDQNTrainer(vanilla_q, robust_q, worst_attack_q, config)
 
 
 def _make_config(
     learning_rate: float = 0.0,
     regularizer_margin: float = 0.0,
-    target_update_every: int = 1000,
-    worst_mix_ratio: float = 0.0,
-    worst_update_every: int = 1,
-    reachable_epsilon: float | None = 0.0,
     epsilon_schedule: RampSchedule | None = None,
-    worst_epsilon_schedule: RampSchedule | None = None,
-    worst_kappa_schedule: RampSchedule | None = None,
+    kappa_wst_schedule: RampSchedule | None = None,
     perturbation_scale: Tensor | None = None,
 ) -> WocaRDQNConfig:
     if epsilon_schedule is None:
         epsilon_schedule = RampSchedule(start_step=0, ramp_steps=1, final_value=0.0)
-    if worst_epsilon_schedule is None:
-        worst_epsilon_schedule = RampSchedule(start_step=0, ramp_steps=1, final_value=0.0)
-    if worst_kappa_schedule is None:
-        worst_kappa_schedule = RampSchedule(start_step=0, ramp_steps=1, final_value=0.0)
+    if kappa_wst_schedule is None:
+        kappa_wst_schedule = RampSchedule(start_step=0, ramp_steps=1, final_value=0.0)
     return WocaRDQNConfig(
         num_actions=NUM_ACTIONS,
         discount_factor=DISCOUNT,
+        target_update_coefficient=0.005,
         learning_rate=learning_rate,
-        target_update_every=target_update_every,
-        worst_mix_ratio=worst_mix_ratio,
-        worst_update_every=worst_update_every,
-        reachable_epsilon=reachable_epsilon,
         epsilon_schedule=epsilon_schedule,
-        worst_epsilon_schedule=worst_epsilon_schedule,
-        worst_kappa_schedule=worst_kappa_schedule,
+        kappa_wst_schedule=kappa_wst_schedule,
         kappa_reg=1.0,
         observation_low=-1.0,
         observation_high=1.0,

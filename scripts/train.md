@@ -62,6 +62,11 @@ An argument a mode does not read is accepted and ignored.
 | `--save` | `default_save_name.N.pt` | Checkpoint path, relative to the current working directory. `N` is the next unused number, picked at launch. Pass a name per run to avoid two simultaneous runs choosing the same file. |
 | `--logdir` | `runs` | TensorBoard root. Logs go to `<logdir>/<run-name>`. |
 | `--run-name` | timestamp | Sub-directory name inside `--logdir`. |
+| `--config` | none | JSON file with argument values; flags on the command line override it. See `configs/README.md`. |
+| `--render` | off | Show the current policy in a separate window while training. Ignored by `wocar_ppo`. |
+| `--render-fps` | 15.0 | Frames per second of the render process. |
+| `--render-publish-every` | 100 | Training steps between weight publishes. |
+| `--render-refresh-seconds` | 0 | Swap in the newest weights mid-episode every N seconds (0 = only at episode start). |
 
 With `--reward team` (the default), each vehicle gets
 
@@ -104,13 +109,17 @@ Both ramps start at step 0 and end at `--total-steps`. That window is our choice
 
 ## WocaR-DQN only (`wocar_dqn`)
 
-All defaults are placeholders, not paper values.
+Defaults are placeholders, not paper values, unless the row says so.
 
 | Argument | Default | Meaning |
 |---|---|---|
 | `--dqn-env` | `highway` | Environment: `highway` or `intersection`. |
 | `--hidden` | 64 | Width of `Q_v`, `Q_phi` and `Q_r`. |
+| `--regularizer-margin` | 1 | Margin `c` of the regularizer hinge (official `hinge_c`). |
 | `--tau` | 0.005 | Soft-update coefficient for the target `Q_v'`. |
+| `--dqn-kappa-wst-final` | 0.5 | Final value of `kappa_wst`, the weight of `Q_phi` in the `Q_r` target. Paper value. |
+| `--kappa-wst-start-fraction` | 1/3 | Fraction of `--total-steps` before the `kappa_wst` ramp starts. Paper: 0 for the first 2M of 6M steps. |
+| `--double-dqn` | off | Double-DQN target for `Q_v`. Off gives the plain DQN target `r + gamma * max_a' Q_v'(s', a')` of Algorithm 2. |
 | `--lr` | 1e-4 | Learning rate for all three Q-networks. |
 | `--buffer-size` | 100000 | Replay capacity in transitions. Each env step adds one transition per agent. |
 | `--warmup` | 5000 | See below. |
@@ -118,7 +127,7 @@ All defaults are placeholders, not paper values.
 | `--explore-steps` | 50000 | Env steps over which the exploration probability decays from 1.0. |
 | `--explore-final` | 0.05 | Final epsilon-greedy exploration probability. Unrelated to the attack radius ε. |
 
-`kappa_wst` for DQN is fixed in code: exponential ramp to 0.5, starting at one third of `--total-steps`.
+`kappa_wst` for DQN ramps exponentially from 0 to `--dqn-kappa-wst-final`. The ramp starts at `--kappa-wst-start-fraction` times `--total-steps` and ends at `--total-steps`. `--kappa-wst-final` and `--kappa-wst-shape` are WocaR-PPO only and are not read by `wocar_dqn`.
 
 ### `--warmup` has two units
 
@@ -140,4 +149,4 @@ uv run tensorboard --logdir runs
 
 ## Sanity check
 
-For `wocar_ppo`, `--eps-final 0` and `--kappa-wst-final 0` remove the WocaR terms and should match the plain PPO baseline. This check does not apply to `wocar_dqn`: its `kappa_wst` schedule is fixed in code at a final value of 0.5, so the CLI options cannot make it equivalent to plain independent DQN.
+For `wocar_ppo`, `--eps-final 0` and `--kappa-wst-final 0` remove the WocaR terms and should match the plain PPO baseline. For `wocar_dqn`, `--eps-final 0`, `--dqn-kappa-wst-final 0` and `--kappa-reg 0` reduce the `Q_r` loss to a plain TD loss on `r + gamma * max_a' Q_v'(s', a')`. This is still not plain independent DQN: `Q_r` bootstraps from the separately trained `Q_v'`, not from a target copy of itself.

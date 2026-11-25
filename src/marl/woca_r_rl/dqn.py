@@ -586,7 +586,7 @@ def _build_trainer(
         observation_low=-1.0,
         observation_high=1.0,
         regularizer_margin=args.regularizer_margin,
-        use_double_dqn=not args.no_double_dqn,
+        use_double_dqn=args.double_dqn,
         perturbation_scale=perturbation_scale,
     )
     return WocaRDQNTrainer(vanilla_q, robust_q, worst_attack_q, config)
