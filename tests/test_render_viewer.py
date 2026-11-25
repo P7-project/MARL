@@ -6,6 +6,12 @@ from src.marl.env import make_env
 N_AGENTS: int = 5
 
 
+@pytest.fixture(autouse=True)
+def offscreen_driver(monkeypatch) -> None:
+    """Draw like human mode without a window; highway-env draws nothing under the dummy driver."""
+    monkeypatch.setenv("SDL_VIDEODRIVER", "offscreen")
+
+
 def test_rgb_array_render_on_highway_returns_a_real_frame() -> None:
     env = make_env(3, render_mode="rgb_array", name="highway")
     env.reset(seed=0)
@@ -16,8 +22,7 @@ def test_rgb_array_render_on_highway_returns_a_real_frame() -> None:
     assert frame.std() > 0
 
 
-def test_every_view_is_centred_on_its_own_car(monkeypatch) -> None:
-    monkeypatch.setenv("SDL_VIDEODRIVER", "offscreen")  # draws like human mode, without a window
+def test_every_view_is_centred_on_its_own_car() -> None:
     env = make_env(N_AGENTS, render_mode="human", name="highway", render_agents=N_AGENTS)
     env.reset(seed=0)
     env.render()
