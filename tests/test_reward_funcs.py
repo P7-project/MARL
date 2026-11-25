@@ -1,8 +1,9 @@
 import numpy as np
 import pytest
 
+from src.marl import reward_funcs
 from src.marl.env import make_env
-from src.marl.reward_funcs import MeanReward, get_reward_function
+from src.marl.reward_funcs import MeanReward, RewardFunction, get_reward_function
 
 
 @pytest.fixture
@@ -48,3 +49,25 @@ def test_step_returns_mean_reward_per_vehicle(team_env):
 def test_unknown_reward_function_raises():
     with pytest.raises(ValueError, match="mean"):
         get_reward_function("foo")
+
+
+def test_reward_function_runs_once_per_step(monkeypatch):
+    class CountingReward(RewardFunction):
+        calls = 0
+
+        def __call__(self, env):
+            CountingReward.calls += 1
+            return MeanReward()(env)
+
+    monkeypatch.setitem(reward_funcs.REWARD_FUNCTIONS, "counting", CountingReward)
+    env = make_env(3, reward_function="counting")
+    env.reset(seed=0)
+    for steps in range(1, 4):
+        env.step((1, 1, 1))
+        assert CountingReward.calls == steps
+    env.close()
+
+
+def test_unknown_reward_function_fails_at_env_creation():
+    with pytest.raises(ValueError, match="foo"):
+        make_env(3, reward_function="foo")

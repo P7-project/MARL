@@ -21,18 +21,20 @@ class TeamHighwayEnv(HighwayEnv):
         config["reward_function"] = "mean"
         return config
 
+    def configure(self, config: dict) -> None:
+        """HighwayEnv.configure, then build the configured reward function (fails early on a bad name)."""
+        super().configure(config)
+        self.reward_function = get_reward_function(self.config["reward_function"])
+
     def step(self, action) -> tuple:
         """HighwayEnv.step, but the reward is one value per controlled vehicle."""
         obs, _reward, terminated, truncated, info = super().step(action)
-        return obs, self._vehicle_rewards(), terminated, truncated, info
-
-    def _vehicle_rewards(self) -> tuple[float, ...]:
-        """One reward per controlled vehicle, from the configured reward function."""
-        return get_reward_function(self.config["reward_function"])(self)
+        return obs, self._last_vehicle_rewards, terminated, truncated, info
 
     def _reward(self, action) -> float:
-        """Mean of the per-vehicle rewards, kept scalar for highway-env internals."""
-        return float(np.mean(self._vehicle_rewards()))
+        """Run the reward function once for this step, store the per-vehicle rewards and return their mean."""
+        self._last_vehicle_rewards = self.reward_function(self)
+        return float(np.mean(self._last_vehicle_rewards))
 
     def _rewards(self, action) -> dict[str, float]:
         """Average each reward term over all controlled vehicles."""
