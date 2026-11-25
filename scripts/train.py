@@ -1,5 +1,4 @@
 import argparse
-import re
 import sys
 from datetime import datetime
 from enum import Enum
@@ -16,8 +15,6 @@ from marl.training.trainer import train
 from marl.woca_r_rl.ppo import train_ppo
 from marl.woca_r_rl.dqn import train_dqn
 
-DEFAULT_SAVE_STEM: str = "default_save_name"
-
 console = Console()
 
 class UpdateFunction(Enum):
@@ -30,7 +27,10 @@ def main() -> None:
     parser: ConfigArgumentParser = build_parser()
     args: argparse.Namespace = parser.parse()
     args.run_name = args.run_name or build_default_run_name(args.update_function)
-    
+    args.run_name = reserve_run_folder(Path(args.logdir), args.run_name)
+    console.print(f"Run name: {args.run_name}")
+    resolve_save_path(args)
+
     if args.update_function == UpdateFunction.wocar_ppo.value:
         train_ppo(args)
     elif args.update_function == UpdateFunction.wocar_dqn.value:
@@ -58,7 +58,7 @@ def build_parser() -> ConfigArgumentParser:
     parser.add_argument("--ent", type=float, default=0.01)
     parser.add_argument("--max-grad-norm", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--save", type=str, default=get_default_save_name())
+    parser.add_argument("--save", type=str, default=None)
     parser.add_argument("--logdir", type=str, default="runs")
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument(
@@ -113,19 +113,55 @@ def build_parser() -> ConfigArgumentParser:
     return ConfigArgumentParser(parser)
 
 
-def get_default_save_name(save_directory: Path = Path(".")) -> str:
-    next_number: int = _highest_save_number(save_directory) + 1
-    return str(save_directory / f"{DEFAULT_SAVE_STEM}.{next_number}.pt")
+def reserve_run_folder(logdir: Path, run_name: str) -> str:
+    """Create a new <logdir>/<run_name> folder and return the name that was used.
+
+    If the folder exists, try <run_name>_2, <run_name>_3, ... The folder is created
+    with exist_ok=False, so two runs started at the same time never share it.
+    """
+    logdir.mkdir(parents=True, exist_ok=True)
+    number: int = 1
+    while True:
+        name: str = run_name if number == 1 else f"{run_name}_{number}"
+        try:
+            (logdir / name).mkdir(exist_ok=False)
+        except FileExistsError:
+            number += 1
+            continue
+        return name
 
 
-def _highest_save_number(save_directory: Path) -> int:
-    pattern: re.Pattern[str] = re.compile(rf"^{re.escape(DEFAULT_SAVE_STEM)}\.(\d+)\.pt$")
-    numbers: list[int] = []
-    for path in save_directory.glob(f"{DEFAULT_SAVE_STEM}.*.pt"):
-        match: re.Match[str] | None = pattern.match(path.name)
-        if match is not None:
-            numbers.append(int(match.group(1)))
-    return max(numbers, default=0)
+def resolve_save_path(args: argparse.Namespace) -> None:
+    """Set args.save to a reserved file in the run folder when --save was not given.
+
+    For an explicit --save, create its parent folder so torch.save does not fail
+    after training.
+    """
+    if args.save is None:
+        args.save = reserve_default_save_path(Path(args.logdir) / args.run_name)
+    else:
+        Path(args.save).parent.mkdir(parents=True, exist_ok=True)
+
+
+def reserve_default_save_path(save_directory: Path) -> str:
+    """Create and return the first free model.pt, model.2.pt, ... in save_directory.
+
+    The file is created with exclusive create, so two runs started at the same time
+    never get the same path.
+    """
+    save_directory.mkdir(parents=True, exist_ok=True)
+    number: int = 1
+    while True:
+        name: str = "model.pt" if number == 1 else f"model.{number}.pt"
+        path: Path = save_directory / name
+        try:
+            with path.open("x"):
+                pass
+        except FileExistsError:
+            number += 1
+            continue
+        return str(path)
+
 
 def build_default_run_name(update_function: str) -> str:
     timestamp: str = datetime.now().strftime("%d_%H-%M-%S")

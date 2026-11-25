@@ -59,9 +59,9 @@ An argument a mode does not read is accepted and ignored.
 | `--total-steps` | 200000 | Total environment steps. |
 | `--seed` | 0 | Seeds numpy and torch. |
 | `--gamma` | 0.99 | Discount factor. |
-| `--save` | `default_save_name.N.pt` | Checkpoint path, relative to the current working directory. `N` is the next unused number, picked at launch. Pass a name per run to avoid two simultaneous runs choosing the same file. |
+| `--save` | `<logdir>/<run-name>/model.pt` | Checkpoint path, relative to the current working directory. By default the file is `model.pt` in the run's own folder, reserved at launch. Only set `--save` (CLI or config) when you want a fixed path; runs with the same path overwrite each other. The folder of `--save` is created at launch if it does not exist. |
 | `--logdir` | `runs` | TensorBoard root. Logs go to `<logdir>/<run-name>`. |
-| `--run-name` | timestamp | Sub-directory name inside `--logdir`. |
+| `--run-name` | `<update-function>_<day>_<HH-MM-SS>` | Sub-directory name inside `--logdir`. Every run gets its own new folder: if `<logdir>/<run-name>` already exists (two runs started in the same second, or a reused `--run-name`), `_2`, `_3`, ... is appended. The final name is printed at launch. |
 | `--config` | none | JSON file with argument values; flags on the command line override it. See `configs/README.md`. |
 | `--render` | off | Show the current policy in a separate window while training. Ignored by `wocar_ppo`. |
 | `--render-fps` | 15.0 | Frames per second of the render process. |
