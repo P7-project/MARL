@@ -1,9 +1,13 @@
+import math
+from argparse import Namespace
+
 import pytest
 import torch
 from auto_LiRPA import BoundedModule
 from torch import Tensor, nn
 
 # Adjust to the real module path of ppo.py.
+from src.marl.woca_r_rl import ppo
 from src.marl.woca_r_rl.ppo import (
     ActionBox,
     PolicyActionBounder,
@@ -354,6 +358,128 @@ def test_regularizer_loss_gradients_reach_the_policy_and_not_the_q_network() -> 
 
     assert _has_nonzero_gradient(policy)
     assert not _has_any_gradient(q_network)
+
+
+# --------------------------------------------------------------------------- #
+# Algorithm 1 behaviour: w(s), Dist, gradients, robust advantage, update order
+# --------------------------------------------------------------------------- #
+
+
+def test_state_importance_minimizes_q_over_the_action_space_not_the_ibp_box() -> None:
+    """
+    pi(s) = 0.3 everywhere, so its IBP box is the point (0.3, 0.3) for any epsilon.
+    Q(s, a) = a_1 + a_2 and the action space is [-1, 1] x [-2, 2], so
+    min_a Q = -3 and w = V - (-3) = 1 + 3 = 4. Over the box it would be 1 - 0.6 = 0.4.
+    """
+    states = _random_states()
+    policy = BoundedModule(_constant_network(STATE_DIM, ACTION_DIM, 0.3), torch.zeros_like(states))
+    q_network = _linear_q(state_weight=0.0, action_weight=1.0)
+    losses = WocaRLosses(
+        value_network=_ConstantValue(1.0),
+        q_network=q_network,
+        bounder=PolicyActionBounder(policy),
+        searcher=WorstActionSearcher(q_network),
+        regularizer=SgldRegularizer(policy),
+        discount_factor=0.9,
+        action_lower=torch.tensor([-1.0, -2.0]),
+        action_upper=torch.tensor([1.0, 2.0]),
+    )
+
+    weights = losses.state_importance(states)
+
+    torch.testing.assert_close(weights, torch.full((BATCH_SIZE,), 4.0), atol=TOLERANCE, rtol=0.0)
+
+
+def test_regularizer_distance_divides_by_sigma_squared() -> None:
+    """
+    mu(s) = (2 s, s) with a 1-d state, sigma = (0.5, 2), epsilon = 0.1.
+    The distance grows with |s~ - s|, so SGLD ends on the ball edge |s~ - s| = 0.1:
+    Dist = (2 * 0.1)^2 / 0.5^2 + (0.1)^2 / 2^2 = 0.16 + 0.0025 = 0.1625.
+    """
+    mean_network = nn.Linear(1, 2, bias=False)
+    with torch.no_grad():
+        mean_network.weight.copy_(torch.tensor([[2.0], [1.0]]))
+    log_std = nn.Parameter(torch.log(torch.tensor([0.5, 2.0])))
+    states = torch.tensor([[1.0], [-0.5], [0.0]])
+
+    loss = SgldRegularizer(mean_network, log_std=log_std).per_state_loss(states, 0.1)
+
+    torch.testing.assert_close(loss.detach(), torch.full((3,), 0.1625), atol=TOLERANCE, rtol=0.0)
+
+
+def test_regularizer_gradient_flows_only_through_the_perturbed_mean(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    mu(s) = w s with w = 2, sigma = 0.5, s = 1 and s~ fixed to 1.1.
+    With mu(s) and sigma detached, L = (c - w s~)^2 / sigma^2 with c = w s = 2, so
+    dL/dw = 2 (c - w s~)(-s~) / sigma^2 = 2 * (-0.2) * (-1.1) / 0.25 = 1.76,
+    and log_std gets no gradient. (Without detaching mu(s), dL/dw would be 0.16.)
+    """
+    mean_network = nn.Linear(1, 1, bias=False)
+    with torch.no_grad():
+        mean_network.weight.fill_(2.0)
+    log_std = nn.Parameter(torch.log(torch.tensor([0.5])))
+    regularizer = SgldRegularizer(mean_network, log_std=log_std)
+    monkeypatch.setattr(
+        regularizer, "_find_perturbation", lambda states, epsilon: (states + 0.1).detach()
+    )
+
+    regularizer.per_state_loss(torch.tensor([[1.0]]), 0.1).sum().backward()
+
+    assert log_std.grad is None or float(log_std.grad.abs().sum()) == 0.0
+    assert mean_network.weight.grad is not None
+    assert float(mean_network.weight.grad) == pytest.approx(1.76, abs=TOLERANCE)
+
+
+def test_robust_advantage_is_the_normalized_sum() -> None:
+    """
+    A_hat = (1, -1, 1, -1), Q_phi = (2, 2, -2, -2), kappa_wst = 0.5:
+    A_hat + kappa Q = (2, 0, 0, -2), mean 0, unbiased std sqrt(8 / 3),
+    so the result is (sqrt(3/2), 0, 0, -sqrt(3/2)).
+    """
+    states = torch.zeros(4, STATE_DIM)
+    states[:, 0] = torch.tensor([2.0, 2.0, -2.0, -2.0])  # Q(s, a) = sum(s)
+    actions = torch.zeros(4, ACTION_DIM)
+    advantages = torch.tensor([1.0, -1.0, 1.0, -1.0])
+    losses = _make_losses(
+        _make_bounded_policy(states), _linear_q(state_weight=1.0, action_weight=0.0), _ConstantValue(0.0)
+    )
+
+    robust = ppo._robust_advantages(losses, advantages, states, actions, 0.5)
+
+    root = math.sqrt(1.5)
+    torch.testing.assert_close(robust, torch.tensor([root, 0.0, 0.0, -root]), atol=1e-4, rtol=0.0)
+
+
+def test_update_fits_value_then_worst_attack_critic_then_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fit_value(*args: object, **kwargs: object) -> float:
+        calls.append("value")
+        return 0.0
+
+    def fit_q(*args: object, **kwargs: object) -> float:
+        calls.append("q")
+        return 0.0
+
+    def fit_policy(*args: object, **kwargs: object) -> dict[str, float]:
+        calls.append("policy")
+        return {"actor": 0.0, "reg": 0.0, "entropy": 0.0}
+
+    monkeypatch.setattr(ppo, "_rollout_tensors", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ppo, "_fit_value_function", fit_value)
+    monkeypatch.setattr(ppo, "_fit_worst_attack_critic", fit_q)
+    monkeypatch.setattr(ppo, "_fit_policy", fit_policy)
+
+    ppo.ppo_update_wocar(
+        None, None, None, None, None, None,  # type: ignore[arg-type]
+        0.1, 0.5, 0.1, {}, 0.0, Namespace(), torch.device("cpu"),
+    )
+
+    assert calls == ["value", "q", "policy"]
 
 
 # --------------------------------------------------------------------------- #
