@@ -521,11 +521,6 @@ def train_dqn(args: Namespace, console: Console) -> None:
                     for name, value in metrics._asdict().items():
                       if np.isfinite(value):
                           writer.add_scalar(f"woca/{name}", value, step)
-                    writer.add_scalar(
-                        "woca/reachable_at_eps_final",
-                        trainer.mean_reachable_actions_at(batch, args.eps_final),
-                        step,
-                    )
 
             if renderer is not None:
                 renderer.publish_if_due(step, trainer.robust_q_state_dict)
