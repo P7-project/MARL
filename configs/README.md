@@ -20,7 +20,7 @@ uv run scripts/train.py --config configs/wocar_dqn_highway.json
 
 - Keys are the argparse dest names: the flag without the leading `--`, with `-` replaced by `_`.
   `--kappa-reg` becomes `kappa_reg`, `--update-function` becomes `update_function`.
-- Boolean switches (`render`, `reachable_eps_scheduled`, `mse_loss`) must be JSON `true` or `false`; a string such as `"false"` is rejected with an error.
+- Boolean switches (`render`, `double_dqn`) must be JSON `true` or `false`; a string such as `"false"` is rejected with an error.
 - JSON has no comments. Put notes in the file name or in this README, not in the file.
 - An unknown key (e.g. a typo like `kapa_reg`), a value outside the allowed choices
   (e.g. `"update_function": "wocar-dqn"`), a missing file or invalid JSON stops the
@@ -81,7 +81,7 @@ Defaults are the `build_parser` defaults (see also `scripts/train.md`).
 | Key | What it does | Type / allowed values | Default | Used by |
 |---|---|---|---|---|
 | `env_id` | Gymnasium environment id. | str | `Hopper-v5` | wocar_ppo |
-| `kappa_wst_final` | Final weight of the `Q_phi` advantage shift. | float | 0.8 | wocar_ppo |
+| `kappa_wst_final` | Final weight of the `Q_phi` advantage shift. WocaR-PPO only; WocaR-DQN uses `dqn_kappa_wst_final`. | float | 0.8 | wocar_ppo |
 | `kappa_wst_shape` | Ramp shape for `kappa_wst`. Exponential only on Ant. | `linear`, `exponential` | `linear` | wocar_ppo |
 
 ### WocaR-DQN
@@ -90,18 +90,12 @@ Defaults are the `build_parser` defaults (see also `scripts/train.md`).
 |---|---|---|---|---|
 | `dqn_env` | Environment for WocaR-DQN. | `highway`, `intersection` | `highway` | wocar_dqn |
 | `lr` | Learning rate for `Q_v`, `Q_phi` and `Q_r`. | float | 1e-4 | wocar_dqn |
-| `adam_eps` | Epsilon of the Adam optimizers. | float | 1.5e-4 | wocar_dqn |
 | `regularizer_margin` | Margin of the regularizer hinge (official `hinge_c`). | float | 1 | wocar_dqn |
 | `hidden` | Width of the three Q-networks. | int | 64 | wocar_dqn |
-| `target_update_every` | Updates between hard copies of `Q_r` into the target network. Placeholder value. | int | 2000 | wocar_dqn |
-| `worst_ratio` | Weight of `Q_phi` in the target-action mix (official `worst_ratio`). | float | 0.1 | wocar_dqn |
-| `worst_rate` | `Q_phi` step every N updates. | int | 100 | wocar_dqn |
-| `worst_eps_final` | Radius of the worst-case loss; pixel scale in the official config, tune for ours. | float | 0.005 | wocar_dqn |
-| `worst_schedule` | Ramp length of the worst-case schedules: this value if > 0, otherwise `total_steps`. | int | 0 | wocar_dqn |
-| `worst_kappa_final` | TD weight ramps 1 -> this. | float | 0.1 | wocar_dqn |
-| `reachable_eps` | Radius for the reachable-action set (official value). | float | 1e-7 | wocar_dqn |
-| `reachable_eps_scheduled` | Use the scheduled ε for the reachable-action set instead (paper description). | bool | `false` | wocar_dqn |
-| `mse_loss` | MSE instead of Huber loss. | bool | `false` | wocar_dqn |
+| `tau` | Soft-update coefficient for the target network `Q_v'`. | float | 0.005 | wocar_dqn |
+| `dqn_kappa_wst_final` | Final value of `kappa_wst`, the weight of `Q_phi` in the `Q_r` target (exponential ramp). WocaR-DQN only; WocaR-PPO uses `kappa_wst_final`. | float | 0.5 | wocar_dqn |
+| `kappa_wst_start_fraction` | Fraction of `total_steps` before the `kappa_wst` ramp starts; it ends at `total_steps`. | float | 1/3 | wocar_dqn |
+| `double_dqn` | Double-DQN target for `Q_v`. When off, the plain DQN target `r + gamma * max_a' Q_v'(s', a')` as in Algorithm 2. | bool | `false` | wocar_dqn |
 | `buffer_size` | Replay buffer capacity, in transitions (one per agent per env step). | int | 100000 | wocar_dqn |
 | `warmup` | Transitions in the buffer before updates start; also the env step where ε starts ramping. Must be smaller than `total_steps`. | int | 5000 | wocar_dqn |
 | `batch_size` | Minibatch size per update. | int | 64 | wocar_dqn |
