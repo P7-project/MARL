@@ -13,7 +13,7 @@ import torch
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 from scripts.evaluate import build_parser
-from src.marl.attacks.registry import ObservationAttack, build_attack
+from src.marl.attacks.registry import ATTACK_BUILDERS, ObservationAttack, build_attack
 from src.marl.training import attack_logging
 from src.marl.training.evaluator import attacked_cars_per_episode, evaluate_attacked
 from src.marl.woca_r_rl.dqn import DqnPlayer, _build_robust_q, build_dqn_player
@@ -99,6 +99,8 @@ def _args(checkpoint: dict, tmp_path: Path, **overrides) -> Namespace:
         "eval_episodes": EPISODES,
         "seed": 0,
         "out": None,
+        "render": False,
+        "render_agents": None,
     }
     return Namespace(**{**values, **overrides})
 
@@ -319,7 +321,7 @@ def test_attack_changes_only_the_attacked_cars(checkpoint) -> None:
     assert player._obs is not None
     clean: list[int] = player._greedy_actions(player._obs)
     assert player.attack_counts == (0, 0)
-    attack: ObservationAttack = build_attack("minbest")
+    attack: ObservationAttack = build_attack("minbest", 0)
     everyone: list[int] = _actions_under_attack(player, attack, 1.0, list(range(N_AGENTS)))
     changed: list[int] = [car for car in range(N_AGENTS) if everyone[car] != clean[car]]
     assert changed
@@ -366,8 +368,55 @@ def test_unknown_attack_is_rejected_before_creating_the_player(
         raise AssertionError("a player was created")
 
     monkeypatch.setattr(DqnPlayer, "__init__", fail)
-    with pytest.raises(ValueError, match="Unknown attack: 'unknown'. Available: minbest"):
+    with pytest.raises(ValueError, match="Unknown attack: 'unknown'. Available: minbest, pgd, random"):
         evaluate_attacked(_args(checkpoint, tmp_path, attack="unknown"))
+
+
+def test_registry_lists_every_attack() -> None:
+    assert sorted(ATTACK_BUILDERS) == ["minbest", "pgd", "random"]
+    for name in ATTACK_BUILDERS:
+        assert callable(build_attack(name, 0))
+
+
+@pytest.mark.parametrize("name", ["minbest", "pgd", "random"])
+def test_every_attack_at_zero_epsilon_matches_natural_policy(name, tmp_path) -> None:
+    checkpoint: dict = _checkpoint("highway")
+    returns, crashes = _natural_episodes(checkpoint)
+    report: dict = evaluate_attacked(
+        _args(checkpoint, tmp_path, attack=name, attacked_agents="all", attack_eps=[0.0])
+    )
+    assert report["results"][0]["episode_returns"] == returns
+    assert report["results"][0]["episode_crashes"] == crashes
+    assert report["results"][0]["changed_action_rate"] == 0.0
+
+
+@pytest.mark.parametrize("name", ["pgd", "random"])
+def test_seeded_attacks_are_reproducible(name, tmp_path) -> None:
+    checkpoint: dict = _checkpoint("highway")
+    reports: list[dict] = [
+        evaluate_attacked(_args(checkpoint, tmp_path, attack=name, attack_eps=[0.3], seed=seed))
+        for seed in (0, 0)
+    ]
+    assert reports[0]["results"] == reports[1]["results"]
+
+
+@pytest.mark.parametrize("count", [0, N_AGENTS + 1])
+def test_invalid_render_agents_are_rejected(checkpoint, tmp_path, count) -> None:
+    with pytest.raises(ValueError, match="--render-agents must be between 1 and 5"):
+        evaluate_attacked(_args(checkpoint, tmp_path, render_agents=count))
+
+
+def test_render_marks_the_attacked_cars_at_episode_start(monkeypatch) -> None:
+    checkpoint: dict = _checkpoint("highway")
+    player: DqnPlayer = build_dqn_player(checkpoint, render=False)
+    player._render = True  # marks the cars without opening a window
+    mask: torch.Tensor = torch.zeros(N_AGENTS, dtype=torch.bool)
+    mask[[1, 3]] = True
+    player.set_attack(build_attack("minbest", 0), 0.1, mask)
+    player.start_episode(seed=0)
+    vehicles = player._env.unwrapped.controlled_vehicles
+    assert [bool(getattr(vehicle, "attacked", False)) for vehicle in vehicles] == mask.tolist()
+    player.close()
 
 
 def test_headless_player_creates_no_window(checkpoint) -> None:
