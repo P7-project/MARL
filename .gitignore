@@ -7,3 +7,9 @@ PROJECT.md
 
 src/marl/typst/data/
 
+AGENTS.md
+CLAUDE.ma
+.claude/
+docs/paper-context.md
+docs/paper-vs-code-difference.md
+

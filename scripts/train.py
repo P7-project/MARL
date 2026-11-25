@@ -10,6 +10,7 @@ from rich.console import Console
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from marl.rendering import add_render_arguments
+from marl.reward_funcs import REWARD_FUNCTIONS
 from marl.training.trainer import train
 from marl.woca_r_rl.ppo import train_ppo
 from marl.woca_r_rl.dqn import train_dqn
@@ -62,6 +63,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--update-function",
         choices=[f.value for f in UpdateFunction],
         default=UpdateFunction.mappo.value,
+    )
+    parser.add_argument(
+        "--reward",
+        choices=list(REWARD_FUNCTIONS),
+        default="team",
+        help="Reward function for the multi-agent environments (marl.reward_funcs)",
+    )
+    parser.add_argument(
+        "--team-weight",
+        type=float,
+        default=None,
+        help=(
+            "Weight of the teammates' mean reward in each agent's reward, in [0, 1] "
+            "(default: 0.25 for highway, 0.1 for intersection)"
+        ),
     )
     parser.add_argument("--kappa-reg", type=float, default=0.1) # Weight of the regularizer term in the actor loss. The paper grid-searches {0.01, 0.03, 0.1, 0.3, 1.0}. "where κ_wst and κ_reg are hyperparameters balancing between natural performance and robustness"
     parser.add_argument("--eps-final", type=float, default=0.075) # Final attack radius ε, the value epsilon_schedule ramps to.    
