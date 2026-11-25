@@ -27,7 +27,11 @@ def train(args):
         torch.manual_seed(args.seed)
 
         n_agents = args.agents
-        env = make_env(n_agents, reward_function=args.reward)
+        env = make_env(
+            n_agents,
+            reward_function=args.reward,
+            team_weight=args.team_weight,
+        )
         obs_dim = int(np.prod(env.observation_space.spaces[0].shape))
         n_actions = int(env.action_space.spaces[0].n)
 
@@ -37,7 +41,15 @@ def train(args):
         opt_critic = torch.optim.Adam(critic.parameters(), lr=args.lr_critic, eps=1e-5)
 
         renderer: AsyncPolicyRenderer | None = create_renderer(
-            args, partial(MappoPlayer, n_agents, obs_dim, n_actions, args.reward)
+            args,
+            partial(
+                MappoPlayer,
+                n_agents,
+                obs_dim,
+                n_actions,
+                args.reward,
+                args.team_weight,
+            ),
         )
 
         obs, _ = env.reset(seed=args.seed)
@@ -159,11 +171,19 @@ class MappoPlayer(PolicyPlayer):
     """Plays the shared categorical actor greedily in the multi-agent highway env."""
 
     def __init__(
-        self, n_agents: int, obs_dim: int, n_actions: int, reward_function: str = "mean"
+        self,
+        n_agents: int,
+        obs_dim: int,
+        n_actions: int,
+        reward_function: str = "mean",
+        team_weight: float | None = None,
     ) -> None:
         self._n_agents: int = n_agents
         self._env = make_env(
-            n_agents, render_mode="human", reward_function=reward_function
+            n_agents,
+            render_mode="human",
+            reward_function=reward_function,
+            team_weight=team_weight,
         )  # needs the make_env change
         self._actor: Actor = Actor(obs_dim + n_agents, n_actions)
         self._actor.eval()
