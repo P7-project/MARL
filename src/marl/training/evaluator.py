@@ -14,13 +14,18 @@ from torch import Tensor
 
 from ..attacks.registry import ObservationAttack, build_attack
 from ..rendering import PolicyPlayer, StepResult, evaluate_in_windows
-from .attack_logging import create_attack_writer, log_attack_result
+from .attack_logging import (
+    RESULTS_FILE,
+    create_attack_writer,
+    default_run_name,
+    log_attack_result,
+    reserve_attack_folder,
+)
 
 if TYPE_CHECKING:
     from ..woca_r_rl.dqn import DqnPlayer
 
 ATTACK_ALGORITHM: str = "wocar_dqn"
-ATTACK_EPS_FACTORS: tuple[int, ...] = (1, 3)  # default attack radii, as multiples of eps_final
 ATTACK_RNG_STREAM: int = 1  # keeps the car shuffling independent of the env seeds
 DEFAULT_ALGORITHM: str = "mappo"  # for checkpoints saved before the field existed
 
@@ -61,7 +66,7 @@ class EpisodeResult(NamedTuple):
 
 
 def evaluate_attacked(args: Namespace) -> dict:
-    """Headless evaluation under the attack; prints and logs the results and optionally saves them."""
+    """Headless evaluation under the attack; prints, logs and saves the results in its own folder."""
     checkpoint: dict = torch.load(args.eval, map_location="cpu")
     n_agents: int = _checked_agent_count(checkpoint)
     attacked_agents: int = _attacked_count(args.attacked_agents, n_agents)
@@ -73,7 +78,7 @@ def evaluate_attacked(args: Namespace) -> dict:
     attacked_cars: list[list[int]] = attacked_cars_per_episode(
         n_agents, attacked_agents, args.eval_episodes, args.seed
     )
-    epsilons: list[float] = _attack_epsilons(args.attack_eps, attacked_agents, checkpoint)
+    epsilons: list[float] = _attack_epsilons(args.attack_eps, attacked_agents)
     attack: ObservationAttack = build_attack(args.attack)
     report: dict = {
         "settings": {
@@ -89,8 +94,11 @@ def evaluate_attacked(args: Namespace) -> dict:
         "results": [],
     }
 
+    run_name: str = args.run_name or default_run_name(args.attack, attacked_agents, n_agents)
+    folder: Path = reserve_attack_folder(args.logdir, run_name)
+    print(f"Attack evaluation folder: {folder}", flush=True)
     player: DqnPlayer = _builder_for(ATTACK_ALGORITHM)(checkpoint, render=False)
-    writer = create_attack_writer(args.logdir, args.run_name)
+    writer = create_attack_writer(folder)
     try:
         for epsilon in epsilons:
             episodes: list[EpisodeResult] = [
@@ -107,8 +115,10 @@ def evaluate_attacked(args: Namespace) -> dict:
         writer.close()
         player.close()
 
+    results: str = json.dumps(report, indent=2)
+    (folder / RESULTS_FILE).write_text(results)
     if args.out:
-        Path(args.out).write_text(json.dumps(report, indent=2))
+        Path(args.out).write_text(results)
     return report
 
 
@@ -136,17 +146,13 @@ def _attacked_count(requested: int | str, n_agents: int) -> int:
     return count
 
 
-def _attack_epsilons(
-    requested: list[float] | None, attacked_agents: int, checkpoint: dict
-) -> list[float]:
-    """Requested radii, or multiples of the training radius; 0 when no car is attacked."""
+def _attack_epsilons(requested: list[float] | None, attacked_agents: int) -> list[float]:
+    """The requested radii; 0 when no car is attacked."""
     if attacked_agents == 0:
         return [0.0]
-    if requested is not None:
-        return requested
-    if "eps_final" not in checkpoint:
-        raise ValueError("The checkpoint has no eps_final; pass --attack-eps")
-    return [factor * checkpoint["eps_final"] for factor in ATTACK_EPS_FACTORS]
+    if requested is None:
+        raise ValueError("--attack-eps is required with --attack")
+    return requested
 
 
 @torch.no_grad()

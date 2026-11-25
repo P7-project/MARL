@@ -19,25 +19,22 @@ The observation attack is selected with `--attack`:
 
 MinBest moves each feature by at most ε and then clips it to [-1, 1].
 
-Run commands from the repository root. `uv run --locked` uses dependencies from `uv.lock`.
+Run commands from the repository root.
 
 ## Examples
 
 ```bash
-# Exp-1: no car is attacked (natural performance, without windows)
-uv run --locked python scripts/evaluate.py --checkpoint woca_dqn.pt --attack minbest --attacked-agents 0 --episodes 100
+# Exp-1: no car is attacked (natural performance, without windows; --epsilon is required but ignored)
+uv run scripts/evaluate.py --checkpoint woca_dqn.pt --attack minbest --epsilon 0 --attacked-agents 0 --episodes 100
 
 # Exp-2: one random car is attacked per episode
-uv run --locked python scripts/evaluate.py --checkpoint woca_dqn.pt --attack minbest --attacked-agents 1 --episodes 100
+uv run scripts/evaluate.py --checkpoint woca_dqn.pt --attack minbest --epsilon 0.05 0.15 --attacked-agents 1 --episodes 100
 
 # Exp-3: all cars are attacked
-uv run --locked python scripts/evaluate.py --checkpoint woca_dqn.pt --attack minbest --attacked-agents all --episodes 100
+uv run scripts/evaluate.py --checkpoint woca_dqn.pt --attack minbest --epsilon 0.05 0.15 --attacked-agents all --episodes 100
 
-# Custom epsilons
-uv run --locked python scripts/evaluate.py --checkpoint woca_dqn.pt --attack minbest --epsilon 0.01 0.03 0.05 --episodes 100
-
-# Save the results as JSON
-uv run --locked python scripts/evaluate.py --checkpoint woca_dqn.pt --attack minbest --attacked-agents 1 --episodes 100 --out results.json
+# Also copy results.json to another path
+uv run scripts/evaluate.py --checkpoint woca_dqn.pt --attack minbest --epsilon 0.05 --attacked-agents 1 --episodes 100 --out results.json
 ```
 
 ## Arguments
@@ -57,7 +54,7 @@ uv run --locked python scripts/evaluate.py --checkpoint woca_dqn.pt --attack min
 | Argument | Default | Meaning |
 |---|---|---|
 | `--attack` | None | Name of the attack: `minbest`. |
-| `--epsilon` (or `--attack-eps`) | 1x and 3x the checkpoint's `eps_final` | One or more attack radii, each at least 0 and evaluated in turn. Required if the checkpoint has no `eps_final`, unless no car is attacked. |
+| `--epsilon` (or `--attack-eps`) | Required with `--attack` | One or more attack radii, each at least 0 and evaluated in turn. There is no default, so every model is compared at the same radii (the checkpoint's `eps_final` is not used). |
 | `--attacked-agents` | `all` | Number of attacked cars, from 0 to the number of cars, or `all`. |
 
 With `--attacked-agents 0`, `--epsilon` is ignored and there is one result, with epsilon 0.
@@ -66,9 +63,11 @@ With `--attacked-agents 0`, `--epsilon` is ignored and there is one result, with
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `--out` | None | Only with `--attack`. Path of the JSON results file. The directory must exist; an existing file is overwritten. |
-| `--logdir` | `runs` | Only with `--attack`. TensorBoard root directory. |
-| `--run-name` | Timestamp | Only with `--attack`. Name of this evaluation run. Use a new name for each run. |
+| `--out` | None | Only with `--attack`. Extra copy of `results.json` at this path. The directory must exist; an existing file is overwritten. |
+| `--logdir` | `runs` | Only with `--attack`. Root directory; each run gets its own folder `<logdir>/attack_evaluation/<run-name>`. |
+| `--run-name` | `<attack>_<k>of<n>_<day>_<HH-MM-SS>` | Only with `--attack`. Name of the run folder. `k` is the number of attacked cars, `n` the number of cars, `day` the day of the month, e.g. `minbest_1of3_25_22-10-05`. |
+
+Each run reserves a new folder when it starts and prints its path. If the folder already exists, `_2`, `_3`, ... is appended to the name, so two runs never share a folder, even with the same `--run-name` or when started at the same second.
 
 ## Targeting
 
@@ -83,7 +82,7 @@ Rendering is only available without `--attack`, and is then always on, with or w
 
 ```bash
 # Three windows, two episodes each
-uv run --locked python scripts/evaluate.py --checkpoint woca_dqn.pt --eval-windows 3 --episodes 2
+uv run scripts/evaluate.py --checkpoint woca_dqn.pt --eval-windows 3 --episodes 2
 ```
 
 Each window runs its own environment with all cars and prints the steps, return and crash of each episode. The episodes are not seeded.
@@ -102,12 +101,12 @@ With `--attack`, one line is printed per epsilon. Its values are:
 | `crash_rate` | Fraction of episodes in which any controlled car crashed. |
 | `changed_actions` | Fraction of the attacked cars' decisions where the attack changed the chosen action. `n/a` if no car is attacked. |
 
-The JSON file has two parts:
+The results are always saved as `results.json` in the run folder (and copied to `--out` if given). The file has two parts:
 
 - `settings`: `checkpoint`, `env`, `n_agents`, `attack`, `attacked_agents`, `epsilons`, `episodes`, `seed`.
 - `results`: one entry per epsilon, with `epsilon`, `return_mean`, `return_std`, `crash_rate`, `changed_action_rate` (`null` if no car is attacked), and per episode `episode_returns`, `episode_crashes` and `episode_attacked_cars` (car indices from 0).
 
-With `--attack`, the results are also logged to TensorBoard under `runs/attack_evaluation/<run-name>`:
+With `--attack`, the results are also logged to TensorBoard in the same run folder, `<logdir>/attack_evaluation/<run-name>`:
 
 | Scalar | Meaning |
 |---|---|
@@ -119,7 +118,7 @@ With `--attack`, the results are also logged to TensorBoard under `runs/attack_e
 The names start with the setting, e.g. `minbest/attacked_1/epsilon_0.075/episode_reward`, or `clean/` if no car is attacked. Each epsilon is logged when it is finished.
 
 ```bash
-uv run --locked tensorboard --logdir=runs
+uv run tensorboard --logdir=runs
 ```
 
 Open <http://localhost:6006> to compare evaluation runs.

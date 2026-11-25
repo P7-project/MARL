@@ -8,10 +8,37 @@ from torch.utils.tensorboard import SummaryWriter
 LOG_FOLDER: str = "attack_evaluation"
 
 
-def create_attack_writer(logdir: str, run_name: str | None) -> SummaryWriter:
-    """Writer for one evaluation run."""
-    name: str = run_name or datetime.now().strftime("%Y%m%d-%H%M%S")
-    return SummaryWriter(str(Path(logdir) / LOG_FOLDER / name))
+RESULTS_FILE: str = "results.json"
+
+
+def default_run_name(attack: str, attacked_agents: int, n_agents: int) -> str:
+    """Run name from the setting and the start time, e.g. minbest_1of3_25_22-10-05."""
+    return f"{attack}_{attacked_agents}of{n_agents}_{datetime.now().strftime('%d_%H-%M-%S')}"
+
+
+def reserve_attack_folder(logdir: str, run_name: str) -> Path:
+    """Create a new <logdir>/attack_evaluation/<run_name> folder and return it.
+
+    If the folder exists, try <run_name>_2, <run_name>_3, ... The folder is created
+    with exist_ok=False, so two runs started at the same time never share it.
+    Same logic as reserve_run_folder in scripts/train.py.
+    """
+    root: Path = Path(logdir) / LOG_FOLDER
+    root.mkdir(parents=True, exist_ok=True)
+    number: int = 1
+    while True:
+        name: str = run_name if number == 1 else f"{run_name}_{number}"
+        try:
+            (root / name).mkdir(exist_ok=False)
+        except FileExistsError:
+            number += 1
+            continue
+        return root / name
+
+
+def create_attack_writer(folder: Path) -> SummaryWriter:
+    """Writer for one evaluation run, in its reserved folder."""
+    return SummaryWriter(str(folder))
 
 
 def log_attack_result(writer: SummaryWriter, settings: dict, result: dict) -> None:

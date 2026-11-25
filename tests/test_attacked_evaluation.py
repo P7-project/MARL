@@ -2,6 +2,7 @@ import json
 import subprocess
 import sys
 from argparse import Namespace
+from datetime import datetime
 from pathlib import Path
 
 import highway_env.envs.common.abstract as highway_abstract
@@ -13,6 +14,7 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 
 from scripts.evaluate import build_parser
 from src.marl.attacks.registry import ObservationAttack, build_attack
+from src.marl.training import attack_logging
 from src.marl.training.evaluator import attacked_cars_per_episode, evaluate_attacked
 from src.marl.woca_r_rl.dqn import DqnPlayer, _build_robust_q, build_dqn_player
 
@@ -163,8 +165,9 @@ def test_attacked_cars_are_reproducible_and_nested() -> None:
 
 def test_short_run_is_reproducible_and_saved(checkpoint, tmp_path) -> None:
     out: Path = tmp_path / "results.json"
-    report: dict = evaluate_attacked(_args(checkpoint, tmp_path, out=str(out)))
+    report: dict = evaluate_attacked(_args(checkpoint, tmp_path, out=str(out), run_name="run"))
     assert json.loads(out.read_text()) == report
+    assert json.loads((tmp_path / "runs" / "attack_evaluation" / "run" / "results.json").read_text()) == report
     assert evaluate_attacked(_args(checkpoint, tmp_path)) == report
     assert report["settings"] == {
         "checkpoint": str(tmp_path / "checkpoint.pt"),
@@ -206,6 +209,32 @@ def test_results_are_logged_to_tensorboard(tmp_path) -> None:
         assert logged[f"{tag}/reward_std"] == pytest.approx([result["return_std"]])
         assert logged[f"{tag}/crash_rate"] == pytest.approx([result["crash_rate"]])
         assert logged[f"{tag}/changed_action_rate"] == pytest.approx([result["changed_action_rate"]])
+
+
+def test_each_run_gets_its_own_folder_with_results(tmp_path, monkeypatch) -> None:
+    class _FixedTime(datetime):
+        @classmethod
+        def now(cls, tz=None) -> datetime:
+            return datetime(2026, 11, 25, 22, 10, 5)
+
+    monkeypatch.setattr(attack_logging, "datetime", _FixedTime)
+    checkpoint: dict = _checkpoint("highway")
+    reports: list[dict] = [evaluate_attacked(_args(checkpoint, tmp_path)) for _ in range(2)]
+    root: Path = tmp_path / "runs" / "attack_evaluation"
+    folders: list[str] = sorted(path.name for path in root.iterdir())
+    assert folders == ["minbest_1of5_25_22-10-05", "minbest_1of5_25_22-10-05_2"]
+    for name, report in zip(folders, reports):
+        assert json.loads((root / name / "results.json").read_text()) == report
+        assert _logged_scalars(root / name)
+
+
+def test_explicit_run_name_is_not_reused(tmp_path) -> None:
+    checkpoint: dict = _checkpoint("highway")
+    for _ in range(2):
+        evaluate_attacked(_args(checkpoint, tmp_path, run_name="run"))
+    root: Path = tmp_path / "runs" / "attack_evaluation"
+    assert sorted(path.name for path in root.iterdir()) == ["run", "run_2"]
+    assert (root / "run_2" / "results.json").is_file()
 
 
 def test_no_attacked_cars_are_logged_as_clean(tmp_path) -> None:
@@ -256,15 +285,7 @@ def test_zero_cars_and_zero_epsilon_match_natural_policy(checkpoint, tmp_path) -
     assert no_cars["results"][0]["episode_attacked_cars"] == [[]] * EPISODES
 
 
-def test_default_epsilons_come_from_the_checkpoint(checkpoint, tmp_path) -> None:
-    checkpoint["eps_final"] = 0.05
-    report: dict = evaluate_attacked(_args(checkpoint, tmp_path, attack_eps=None))
-    assert report["settings"]["epsilons"] == pytest.approx([0.05, 0.15])
-    used: list[float] = [result["epsilon"] for result in report["results"]]
-    assert used == report["settings"]["epsilons"]
-
-
-def test_explicit_epsilons_override_the_checkpoint(checkpoint, tmp_path) -> None:
+def test_epsilons_ignore_the_checkpoint_eps_final(checkpoint, tmp_path) -> None:
     checkpoint["eps_final"] = 0.05
     report: dict = evaluate_attacked(_args(checkpoint, tmp_path, attack_eps=[0.02]))
     assert report["settings"]["epsilons"] == [0.02]
@@ -277,9 +298,11 @@ def test_missing_epsilon_is_rejected_before_creating_the_player(
     def fail(*args, **kwargs) -> None:
         raise AssertionError("a player was created")
 
+    checkpoint["eps_final"] = 0.05
     monkeypatch.setattr(DqnPlayer, "__init__", fail)
-    with pytest.raises(ValueError, match="pass --attack-eps"):
+    with pytest.raises(ValueError, match="--attack-eps is required"):
         evaluate_attacked(_args(checkpoint, tmp_path, attack_eps=None))
+    assert not (tmp_path / "runs" / "attack_evaluation").exists()
 
 
 def test_zero_cars_need_no_epsilon(checkpoint, tmp_path) -> None:
@@ -376,6 +399,8 @@ def test_invalid_car_count_is_rejected(tmp_path, count) -> None:
         (["--attack-eps=-0.1"], "must be a finite number >= 0"),
         (["--attack-eps", "nan"], "must be a finite number >= 0"),
         (["--attack-eps", "0.1", "--attacked-agents=-1"], "must be a count >= 0 or 'all'"),
+        ([], "--attack-eps (or --epsilon) is required with --attack"),
+        (["--attacked-agents", "0"], "--attack-eps (or --epsilon) is required with --attack"),
     ],
 )
 def test_script_rejects_invalid_flags(flags, message) -> None:

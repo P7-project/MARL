@@ -34,18 +34,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-windows", type=int, default=3)  # parallel windows, each running all agents
     parser.add_argument("--render", action="store_true")
     parser.add_argument("--attack", choices=list(ATTACK_BUILDERS), default=None)  # headless attacked evaluation
-    parser.add_argument("--attack-eps", "--epsilon", dest="attack_eps", type=_epsilon, nargs="+", default=None)  # default 1x and 3x the checkpoint's eps_final
+    parser.add_argument("--attack-eps", "--epsilon", dest="attack_eps", type=_epsilon, nargs="+", default=None)  # required with --attack
     parser.add_argument("--attacked-agents", type=_attacked_agents, default="all")  # a count or "all"
     parser.add_argument("--seed", type=int, default=0)  # only with --attack
-    parser.add_argument("--out", type=str, default=None)  # JSON results, only with --attack
+    parser.add_argument("--out", type=str, default=None)  # extra copy of results.json, only with --attack
     parser.add_argument("--logdir", type=str, default="runs")  # TensorBoard root, only with --attack
-    parser.add_argument("--run-name", type=str, default=None)  # default timestamp, only with --attack
+    parser.add_argument("--run-name", type=str, default=None)  # default <attack>_<k>of<n>_<day>_<time>, only with --attack
     return parser
 
 
 def main():
     parser = build_parser()
     args = parser.parse_args()
+    if args.attack is not None and args.attack_eps is None:
+        parser.error("--attack-eps (or --epsilon) is required with --attack")
 
     if args.eval_episodes is None:
         args.eval_episodes = 1000 if args.attack else 5
