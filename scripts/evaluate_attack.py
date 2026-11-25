@@ -45,53 +45,15 @@ def parse_args():
     """
 
     parser = argparse.ArgumentParser(
-        description="Evaluate WocaR-DQN with random observation attacks."
+        description="Evaluate WocaR-DQN with observation attacks."
     )
 
-    # ---------------------------------------------------------
-    # Model configuration
-    # ---------------------------------------------------------
-    # These arguments describe the model architecture and training
-    # configuration needed to reconstruct the trainer before loading
-    # the trained model weights from the checkpoint.
-    parser.add_argument("--checkpoint", type=str, required=True)
-    parser.add_argument("--agents", type=int, default=3)
-    parser.add_argument("--hidden", type=int, default=64)
-    parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--warmup", type=int, default=5_000)
-    parser.add_argument("--total-steps", type=int, default=200_000)
-    parser.add_argument("--eps-final", type=float, default=0.075)
-    parser.add_argument("--kappa-reg", type=float, default=0.1)
-
-    # ---------------------------------------------------------
-    # WocaR-DQN configuration
-    # ---------------------------------------------------------
-    # These parameters must match the configuration used during
-    # training so that the trainer and its networks are reconstructed
-    # correctly when loading the checkpoint.
-    parser.add_argument("--adam-eps", type=float, default=1.5e-4)
-    parser.add_argument("--regularizer-margin", type=float, default=1)
-    parser.add_argument("--target-update-every", type=int, default=2000)
-    parser.add_argument("--worst-ratio", type=float, default=0.1)
-    parser.add_argument("--worst-rate", type=int, default=100)
-    parser.add_argument("--worst-eps-final", type=float, default=0.005)
-    parser.add_argument("--worst-schedule", type=int, default=0)
-    parser.add_argument("--worst-kappa-final", type=float, default=0.1)
-    parser.add_argument("--reachable-eps", type=float, default=1e-7)
-    parser.add_argument("--reachable-eps-scheduled", action="store_true")
-    parser.add_argument("--mse-loss", action="store_true")
-
-    # DQN replay and training configuration
-    parser.add_argument("--buffer-size", type=int, default=100_000)
-    parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--explore-steps", type=int, default=50_000)
-    parser.add_argument("--explore-final", type=float, default=0.05)
 
     # Evaluation configuration
     parser.add_argument("--mode", choices=[mode.value for mode in EvaluationMode], default=EvaluationMode.CLEAN.value)
     parser.add_argument("--episodes", type=int, default=10)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--checkpoint", type=str, required=True)
 
     # Observation attack configuration
     parser.add_argument("--epsilon", type=float, default=0.05)
@@ -116,41 +78,28 @@ def parse_args():
 
     # Validate the evaluation configuration
 
+    if args.target_agents is None and args.target_mode == TargetMode.FIXED.value:
+        args.target_agents = [0]
+
     if args.epsilon < 0:
         parser.error("--epsilon cannot be negative.")
 
     if not 0.0 <= args.attack_probability <= 1.0:
         parser.error("--attack-probability must be between 0 and 1.")
 
-    if args.agents < 1:
-        parser.error("--agents must be at least 1.")
+
 
     if args.episodes < 1:
         parser.error("--episodes must be at least 1.")
 
-    if args.target_mode == TargetMode.FIXED.value and args.target_agents is not None:
-        if any(agent < 0 or agent >= args.agents for agent in args.target_agents):
-            parser.error("Target agent indices must be between 0 and agents - 1.")
-
-    if (
-        args.mode != EvaluationMode.CLEAN.value
-        and args.target_mode == TargetMode.FIXED.value
-        and args.target_agents is None
-    ):
-        parser.error("--target-agents is required when using fixed targeting.")
-
+ 
     if args.pgd_iters < 1:
         parser.error("--pgd-iters must be at least 1.")
 
     if args.pgd_step_size is not None and args.pgd_step_size <= 0:
         parser.error("--pgd-step-size must be positive.")
 
-    if args.render_agents < 1:
-        parser.error("--render-agents must be at least 1.")
-
-    if args.render_agents > args.agents:
-        parser.error("--render-agents cannot exceed --agents.")
-
+  
     return args
 
 
@@ -170,11 +119,28 @@ def load_model(args, device):
     # Enable human rendering only if requested by the user.
     render_mode = "human" if args.render else None
 
+    # Load the checkpoint 
+    checkpoint = torch.load(args.checkpoint, map_location=device)
+
+    # Use the agent count and training configuration saved in the checkpoint.
+    args.agents = checkpoint["n_agents"]
+    saved_args = argparse.Namespace(**checkpoint["args"])
+
+    if args.target_mode == TargetMode.FIXED.value and args.target_agents is not None:
+        if any(agent < 0 or agent >= args.agents for agent in args.target_agents):
+            raise ValueError(
+            f"Target agent indices must be between 0 and {args.agents - 1}.")
+    
+    if args.render_agents > args.agents:
+        raise ValueError("--render-agents cannot exceed the number of agents in the checkpoint.")
+
+    
     # Create the multi-agent environment with the requested number of agents.
     env = make_env(
         args.agents,
         render_mode=render_mode,
         render_agents=args.render_agents,
+        name=checkpoint.get("dqn_env", "highway"),
     )
 
     # Verify that the environment uses tuple spaces for its agents.
@@ -198,12 +164,11 @@ def load_model(args, device):
         obs_dim,
         args.agents,
         n_actions,
-        args,
+        saved_args,
         device
     )
 
-    # Load the checkpoint and restore the trained robust Q-network.
-    checkpoint = torch.load(args.checkpoint, map_location=device)
+    # restore the trained robust Q-network.
     trainer._robust_q.load_state_dict(checkpoint["robust_q"])
 
     return trainer, env
@@ -234,7 +199,7 @@ def evaluate(args, trainer, env, device):
         "epsilon": args.epsilon,
         "attack_probability": args.attack_probability,
         "target_agents": args.target_agents,
-        "target_mode": args.target_mode,
+        "target_mode": TargetMode(args.target_mode),
         "seed": args.seed,
     }
 
@@ -366,7 +331,7 @@ def main():
     # Print the evaluation configuration and summary statistics.
     print(f"Mode: {args.mode}")
 
-    if args.mode in [EvaluationMode.random.value,EvaluationMode.pgd.value]:
+    if args.mode in [EvaluationMode.RANDOM.value,EvaluationMode.PGD.value]:
         print(f"Target mode: {args.target_mode}")
         print(f"Epsilon: {args.epsilon}")
         print(f"Attack probability: {args.attack_probability}")

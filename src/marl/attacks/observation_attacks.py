@@ -21,8 +21,9 @@ class ObservationAttacker:
     Parameters:
         epsilon: Maximum allowed magnitude of the observation perturbation.
         attack_probability: Probability of performing an attack at each timestep.
-        target_agents: List of agent indices eligible for attack. If None,
-            all agents are eligible.
+        target_agents:  List of agent indices to attack. 
+                        Defaults to [0] for fixed targeting. If None in random
+                        targeting, all agents are eligible.
         target_mode: FIXED attacks all specified target agents, while RANDOM
             selects a random non-empty subset of eligible agents.
         seed: Optional random seed for reproducible random attack decisions.
@@ -39,8 +40,19 @@ class ObservationAttacker:
 
         self.epsilon = epsilon
         self.attack_probability = attack_probability
-        self.target_agents = target_agents
         self.target_mode = target_mode
+
+
+        # Default to attacking agent 1 when using fixed targeting.
+        if target_agents is None and target_mode == TargetMode.FIXED:
+            self.target_agents = [0]
+        else:
+            self.target_agents = target_agents
+
+
+
+
+        
 
         # Dedicated random number generator.
         self.rng = np.random.default_rng(seed)

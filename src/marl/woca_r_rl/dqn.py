@@ -597,6 +597,7 @@ def train_dqn(args: Namespace, console: Console) -> None:
                     "n_actions": n_actions,
                     "hidden": args.hidden,
                     "dqn_env": env_name,
+                    "args": vars(args), 
                 },
                 args.save,
             )
