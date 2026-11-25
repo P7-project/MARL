@@ -27,7 +27,7 @@ def train(args):
         torch.manual_seed(args.seed)
 
         n_agents = args.agents
-        env = make_env(n_agents)
+        env = make_env(n_agents, reward_function=args.reward)
         obs_dim = int(np.prod(env.observation_space.spaces[0].shape))
         n_actions = int(env.action_space.spaces[0].n)
 
@@ -37,7 +37,7 @@ def train(args):
         opt_critic = torch.optim.Adam(critic.parameters(), lr=args.lr_critic, eps=1e-5)
 
         renderer: AsyncPolicyRenderer | None = create_renderer(
-            args, partial(MappoPlayer, n_agents, obs_dim, n_actions)
+            args, partial(MappoPlayer, n_agents, obs_dim, n_actions, args.reward)
         )
 
         obs, _ = env.reset(seed=args.seed)
@@ -73,7 +73,7 @@ def train(args):
                     actions = tuple(int(item) for item in action.cpu().numpy())
                     next_obs, reward, terminated, truncated, _info = env.step(actions)
                     next_obs = flatten_obs(next_obs)
-                    reward = float(reward)
+                    reward = float(np.mean(reward))  # MAPPO trains on one team reward
                     done = terminated or truncated
 
                     # Time-limit truncation is not terminal, so include its bootstrap.
@@ -158,9 +158,13 @@ def train(args):
 class MappoPlayer(PolicyPlayer):
     """Plays the shared categorical actor greedily in the multi-agent highway env."""
 
-    def __init__(self, n_agents: int, obs_dim: int, n_actions: int) -> None:
+    def __init__(
+        self, n_agents: int, obs_dim: int, n_actions: int, reward_function: str = "mean"
+    ) -> None:
         self._n_agents: int = n_agents
-        self._env = make_env(n_agents, render_mode="human")  # needs the make_env change
+        self._env = make_env(
+            n_agents, render_mode="human", reward_function=reward_function
+        )  # needs the make_env change
         self._actor: Actor = Actor(obs_dim + n_agents, n_actions)
         self._actor.eval()
         self._obs: np.ndarray | None = None
@@ -181,7 +185,7 @@ class MappoPlayer(PolicyPlayer):
         crashed: bool = any(
             vehicle.crashed for vehicle in self._env.unwrapped.controlled_vehicles
         )
-        return StepResult(finished=terminated or truncated, reward=float(_reward), crashed=crashed)
+        return StepResult(finished=terminated or truncated, reward=float(np.mean(_reward)), crashed=crashed)
 
     def close(self) -> None:
         self._env.close()

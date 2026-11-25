@@ -495,7 +495,7 @@ def train_dqn(args: Namespace, console: Console) -> None:
 
         n_agents: int = args.agents
         env_name: str = getattr(args, "dqn_env", "highway")
-        env = make_env(n_agents, name=env_name)
+        env = make_env(n_agents, name=env_name, reward_function=args.reward)
 
         observation_space = env.observation_space
         action_space = env.action_space
@@ -515,7 +515,7 @@ def train_dqn(args: Namespace, console: Console) -> None:
         writer: SummaryWriter = SummaryWriter(f"{args.logdir}/{args.run_name}")
         renderer: AsyncPolicyRenderer | None = create_renderer(
             args,
-            partial(DqnPlayer, n_agents, obs_dim, n_actions, args.hidden, env_name),
+            partial(DqnPlayer, n_agents, obs_dim, n_actions, args.hidden, env_name, args.reward),
         )
 
         obs: np.ndarray = flatten_obs(env.reset(seed=args.seed)[0])
@@ -712,10 +712,13 @@ class DqnPlayer(PolicyPlayer):
         n_actions: int,
         hidden: int,
         env_name: str = "highway",
+        reward_function: str = "mean",
     ) -> None:
         self._n_agents: int = n_agents
         self._device: torch.device = torch.device("cpu")
-        self._env = make_env(n_agents, render_mode="human", name=env_name)
+        self._env = make_env(
+            n_agents, render_mode="human", name=env_name, reward_function=reward_function
+        )
         self._policy: BoundedModule = _build_robust_q(
             obs_dim + n_agents, n_actions, hidden, self._device
         )
