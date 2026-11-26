@@ -1,12 +1,13 @@
 # Training CLI
 
-One entry point, three training modes selected by `--update-function`.
+One entry point, four training modes selected by `--update-function`.
 
 | Value | Algorithm | Trainer | Environment |
 |---|---|---|---|
 | `mappo` | MAPPO baseline | `train` | multi-agent highway, discrete actions |
 | `wocar_ppo` | WocaR-PPO (Algorithm 1) | `train_ppo` | single-agent Mujoco, continuous actions |
 | `wocar_dqn` | WocaR-DQN (Algorithm 2) | `train_dqn` | multi-agent highway or intersection, discrete actions |
+| `dqn` | Vanilla MARL DQN baseline (WocaR-DQN without WocaR) | `train_dqn` | multi-agent highway or intersection, discrete actions |
 
 Run commands from the repository root.
 
@@ -52,7 +53,7 @@ An argument a mode does not read is accepted and ignored.
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `--update-function` | `mappo` | Selects the mode: `mappo`, `wocar_ppo`, `wocar_dqn`. |
+| `--update-function` | `mappo` | Selects the mode: `mappo`, `wocar_ppo`, `wocar_dqn`, `dqn`. |
 | `--agents` | 3 | Number of controlled vehicles. Ignored by `wocar_ppo`. |
 | `--reward` | `team` | Reward function for the multi-agent environments: `mean` gives every vehicle the team mean, `team` mixes each vehicle's own reward with its teammates' mean. Comes from `REWARD_FUNCTIONS` in `src/marl/reward_funcs.py`. Ignored by `wocar_ppo`. |
 | `--team-weight` | per environment | Weight `lambda_env` of the teammates' mean reward; must be in `[0, 1]`. Defaults: `0.25` for highway, `0.1` for intersection. Only used by `--reward team`. Ignored by `wocar_ppo`. |
@@ -111,6 +112,8 @@ Both ramps start at step 0 and end at `--total-steps`. That window is our choice
 
 Defaults are placeholders, not paper values, unless the row says so.
 
+`dqn` (vanilla DQN) reads `--dqn-env`, `--hidden`, `--tau`, `--double-dqn`, `--lr`, `--buffer-size`, `--warmup`, `--batch-size` and `--explore-*` the same way, for its single network `Q` and target `Q'`. Example: `uv run scripts/train.py --config configs/dqn_highway_individual.json`.
+
 | Argument | Default | Meaning |
 |---|---|---|
 | `--dqn-env` | `highway` | Environment: `highway` or `intersection`. |
@@ -140,8 +143,8 @@ With 3 agents, updates begin well before ε starts ramping.
 
 ## Outputs
 
-- Checkpoint at `--save`. `mappo` and `wocar_ppo` save actor and critic state dicts. `wocar_dqn` saves the `Q_r` state dict, which is the acting network.
-- TensorBoard logs in `<logdir>/<run-name>`: `episode/return`, losses, and for WocaR runs `woca/epsilon` and `woca/kappa_wst`.
+- Checkpoint at `--save`. `mappo` and `wocar_ppo` save actor and critic state dicts. `wocar_dqn` saves the `Q_r` state dict, which is the acting network; `dqn` saves its `Q` state dict under the key `q`.
+- TensorBoard logs in `<logdir>/<run-name>`: `episode/return`, losses, and for WocaR runs `woca/epsilon` and `woca/kappa_wst`. Vanilla DQN (`dqn`) logs its loss as `dqn/td_loss`.
 
 ```bash
 uv run tensorboard --logdir runs
@@ -149,4 +152,4 @@ uv run tensorboard --logdir runs
 
 ## Sanity check
 
-For `wocar_ppo`, `--eps-final 0` and `--kappa-wst-final 0` remove the WocaR terms and should match the plain PPO baseline. For `wocar_dqn`, `--eps-final 0`, `--dqn-kappa-wst-final 0` and `--kappa-reg 0` reduce the `Q_r` loss to a plain TD loss on `r + gamma * max_a' Q_v'(s', a')`. This is still not plain independent DQN: `Q_r` bootstraps from the separately trained `Q_v'`, not from a target copy of itself.
+For `wocar_ppo`, `--eps-final 0` and `--kappa-wst-final 0` remove the WocaR terms and should match the plain PPO baseline. For `wocar_dqn`, `--eps-final 0`, `--dqn-kappa-wst-final 0` and `--kappa-reg 0` reduce the `Q_r` loss to a plain TD loss on `r + gamma * max_a' Q_v'(s', a')`. This is still not plain independent DQN: `Q_r` bootstraps from the separately trained `Q_v'`, not from a target copy of itself. For plain DQN use `--update-function dqn`.

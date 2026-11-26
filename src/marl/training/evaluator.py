@@ -25,7 +25,7 @@ from .attack_logging import (
 if TYPE_CHECKING:
     from ..woca_r_rl.dqn import DqnPlayer
 
-ATTACK_ALGORITHM: str = "wocar_dqn"
+ATTACK_ALGORITHMS: tuple[str, ...] = ("wocar_dqn", "dqn")
 ATTACK_RNG_STREAM: int = 1  # keeps the car shuffling independent of the env seeds
 DEFAULT_ALGORITHM: str = "mappo"  # for checkpoints saved before the field existed
 
@@ -48,7 +48,7 @@ def _builder_for(algorithm: str) -> Callable[[dict], PolicyPlayer]:
     if algorithm == "mappo":
         from .trainer import build_mappo_player
         return build_mappo_player
-    if algorithm == "wocar_dqn":
+    if algorithm in ("wocar_dqn", "dqn"):
         from ..woca_r_rl.dqn import build_dqn_player
         return build_dqn_player
     if algorithm == "wocar_ppo":
@@ -85,6 +85,7 @@ def evaluate_attacked(args: Namespace) -> dict:
     report: dict = {
         "settings": {
             "checkpoint": args.eval,
+            "algorithm": checkpoint["algorithm"],
             "env": checkpoint.get("dqn_env", "highway"),
             "n_agents": n_agents,
             "attack": args.attack,
@@ -99,7 +100,7 @@ def evaluate_attacked(args: Namespace) -> dict:
     run_name: str = args.run_name or default_run_name(args.attack, attacked_agents, n_agents)
     folder: Path = reserve_attack_folder(args.logdir, run_name)
     print(f"Attack evaluation folder: {folder}", flush=True)
-    player: DqnPlayer = _builder_for(ATTACK_ALGORITHM)(
+    player: DqnPlayer = _builder_for(checkpoint["algorithm"])(
         checkpoint, render=args.render, render_agents=args.render_agents
     )
     writer = create_attack_writer(folder)
@@ -137,10 +138,12 @@ def attacked_cars_per_episode(
 
 
 def _checked_agent_count(checkpoint: dict) -> int:
-    """Number of cars in the checkpoint; only WocaR-DQN can be attacked."""
+    """Number of cars in the checkpoint; only WocaR-DQN and vanilla DQN can be attacked."""
     algorithm: str = checkpoint.get("algorithm", DEFAULT_ALGORITHM)
-    if algorithm != ATTACK_ALGORITHM:
-        raise ValueError(f"--attack only supports {ATTACK_ALGORITHM} checkpoints, got {algorithm}")
+    if algorithm not in ATTACK_ALGORITHMS:
+        raise ValueError(
+            f"--attack only supports {' and '.join(ATTACK_ALGORITHMS)} checkpoints, got {algorithm}"
+        )
     return checkpoint["n_agents"]
 
 
