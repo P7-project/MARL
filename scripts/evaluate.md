@@ -5,6 +5,7 @@ A single entry point for evaluating a trained model, in windows or under an obse
 | Algorithm | Windows | `--attack` | Environment | Number of cars |
 |---|---|---|---|---|
 | WocaR-DQN (`wocar_dqn`) | yes | yes | From the checkpoint | From the checkpoint |
+| Vanilla DQN (`dqn`) | yes | yes | From the checkpoint | From the checkpoint |
 | MAPPO (`mappo`) | yes | no | Always highway | From the checkpoint |
 | WocaR-PPO (`wocar_ppo`) | no | no | - | - |
 
@@ -60,7 +61,7 @@ uv run scripts/evaluate.py --checkpoint woca_dqn.pt --attack minbest --epsilon 0
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `--checkpoint` (or `--eval`) | Required | Path to a WocaR-DQN or MAPPO checkpoint (see the table above). |
+| `--checkpoint` (or `--eval`) | Required | Path to a WocaR-DQN, vanilla DQN or MAPPO checkpoint (see the table above). |
 | `--episodes` (or `--eval-episodes`) | 1000 with `--attack`, otherwise 5 | Number of evaluation episodes: per epsilon with `--attack`, otherwise per window. |
 | `--eval-windows` | 3 | Number of windows. Only without `--attack`. |
 | `--render` | off | With `--attack`: show the evaluation in a window and outline the attacked cars. Without `--attack` it has no effect (see Rendering). |
@@ -126,7 +127,7 @@ With `--attack`, one line is printed per epsilon. Its values are:
 
 The results are always saved as `results.json` in the run folder (and copied to `--out` if given). The file has two parts:
 
-- `settings`: `checkpoint`, `env`, `n_agents`, `attack`, `attacked_agents`, `epsilons`, `episodes`, `seed`.
+- `settings`: `checkpoint`, `algorithm`, `env`, `n_agents`, `attack`, `attacked_agents`, `epsilons`, `episodes`, `seed`.
 - `results`: one entry per epsilon, with `epsilon`, `return_mean`, `return_std`, `crash_rate`, `changed_action_rate` (`null` if no car is attacked), and per episode `episode_returns`, `episode_crashes` and `episode_attacked_cars` (car indices from 0).
 
 With `--attack`, the results are also logged to TensorBoard in the same run folder, `<logdir>/attack_evaluation/<run-name>`:

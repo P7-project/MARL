@@ -58,6 +58,10 @@ from functools import partial
 
 from ..rendering import AsyncPolicyRenderer, PolicyPlayer, StepResult, Weights, create_renderer
 from copy import deepcopy
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..vanilla_dqn import VanillaDQNTrainer
 
 
 class Batch(NamedTuple):
@@ -416,7 +420,10 @@ class SARegularizer:
 
 
 def train_dqn(args: Namespace, console: Console) -> None:
-    with console.status("[bold green]Setting up WocaR-DQN..."):
+    algorithm: str = getattr(args, "update_function", "wocar_dqn")  # "wocar_dqn" or "dqn"
+    label: str = "vanilla DQN" if algorithm == "dqn" else "WocaR-DQN"
+    log_prefix: str = "dqn" if algorithm == "dqn" else "woca"
+    with console.status(f"[bold green]Setting up {label}..."):
         if args.total_steps <= args.warmup:
             raise ValueError(f"--total_steps ({args.total_steps}) must be >= --warmup ({args.warmup})")
 
@@ -446,7 +453,15 @@ def train_dqn(args: Namespace, console: Console) -> None:
         n_actions: int = int(first_action_space.n)
         input_dim: int = obs_dim + n_agents
 
-        trainer: WocaRDQNTrainer = _build_trainer(obs_dim, n_agents, n_actions, args, device)
+        if algorithm == "dqn":
+            from ..vanilla_dqn import build_vanilla_trainer  # lazy: vanilla_dqn imports this module
+
+            trainer = build_vanilla_trainer(obs_dim, n_agents, n_actions, args, device)
+            policy_weights = trainer.q_state_dict
+        else:
+            trainer = _build_trainer(obs_dim, n_agents, n_actions, args, device)
+            policy_weights = trainer.robust_q_state_dict
+
         buffer: ReplayBuffer = ReplayBuffer(args.buffer_size, input_dim, device)
         writer: SummaryWriter = SummaryWriter(f"{args.logdir}/{args.run_name}")
         renderer: AsyncPolicyRenderer | None = create_renderer(
@@ -466,9 +481,9 @@ def train_dqn(args: Namespace, console: Console) -> None:
         obs: np.ndarray = flatten_obs(env.reset(seed=args.seed)[0])
         episode_return: float = 0.0
 
-    with console.status(f"[bold green]Training WocaR-DQN (0/{args.total_steps})...") as training_status:
+    with console.status(f"[bold green]Training {label} (0/{args.total_steps})...") as training_status:
         for step in range(args.total_steps):
-            training_status.update(f"[bold green]Training WocaR-DQN ({step}/{args.total_steps})...")
+            training_status.update(f"[bold green]Training {label} ({step}/{args.total_steps})...")
             actor_obs: Tensor = _to_tensor(build_actor_obs(obs, n_agents), device)  # [n_agents, input_dim]
             actions: list[int] = _select_actions(trainer, actor_obs, _exploration_probability(step, args))
 
@@ -521,17 +536,17 @@ def train_dqn(args: Namespace, console: Console) -> None:
                 if step % 100 == 0:
                     for name, value in metrics._asdict().items():
                       if np.isfinite(value):
-                          writer.add_scalar(f"woca/{name}", value, step)
+                          writer.add_scalar(f"{log_prefix}/{name}", value, step)
 
             if renderer is not None:
-                renderer.publish_if_due(step, trainer.robust_q_state_dict)
+                renderer.publish_if_due(step, policy_weights)
 
-    with console.status("[bold green]Saving WocaR-DQN..."):
+    with console.status(f"[bold green]Saving {label}..."):
         if args.save:
             torch.save(
                 {
-                    "algorithm": "wocar_dqn",
-                    "robust_q": trainer.robust_q_state_dict(),
+                    "algorithm": algorithm,
+                    "q" if algorithm == "dqn" else "robust_q": policy_weights(),
                     "n_agents": n_agents,
                     "obs_dim": obs_dim,
                     "n_actions": n_actions,
@@ -610,7 +625,7 @@ def _build_robust_q(input_dim: int, n_actions: int, hidden: int, device: torch.d
     )
 
 
-def _select_actions(trainer: WocaRDQNTrainer, actor_obs: Tensor, exploration_probability: float) -> list[int]:
+def _select_actions(trainer: WocaRDQNTrainer | VanillaDQNTrainer, actor_obs: Tensor, exploration_probability: float) -> list[int]:
     return [trainer.select_action(agent_obs, exploration_probability) for agent_obs in actor_obs]
 
 
@@ -660,7 +675,7 @@ class ReplayBuffer:
 
 
 class DqnPlayer(PolicyPlayer):
-    """Plays the greedy Q_r policy in a multi-agent driving environment."""
+    """Plays the greedy policy (Q_r for WocaR-DQN, Q for vanilla DQN) in a multi-agent driving environment."""
 
     def __init__(
         self,
@@ -785,5 +800,6 @@ def build_dqn_player(
         render=render,
         render_agents=render_agents,
     )
-    player.load_weights(checkpoint["robust_q"])
+    weights_key: str = "q" if checkpoint.get("algorithm") == "dqn" else "robust_q"
+    player.load_weights(checkpoint[weights_key])
     return player

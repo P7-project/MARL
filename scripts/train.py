@@ -21,6 +21,7 @@ class UpdateFunction(Enum):
     mappo = "mappo"
     wocar_ppo = "wocar_ppo"
     wocar_dqn = "wocar_dqn"
+    dqn = "dqn"
 
 
 def main() -> None:
@@ -33,7 +34,7 @@ def main() -> None:
 
     if args.update_function == UpdateFunction.wocar_ppo.value:
         train_ppo(args)
-    elif args.update_function == UpdateFunction.wocar_dqn.value:
+    elif args.update_function in (UpdateFunction.wocar_dqn.value, UpdateFunction.dqn.value):
         train_dqn(args, console)
     elif args.update_function == UpdateFunction.mappo.value:
         train(args)

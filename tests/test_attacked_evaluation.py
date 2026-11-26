@@ -173,6 +173,7 @@ def test_short_run_is_reproducible_and_saved(checkpoint, tmp_path) -> None:
     assert evaluate_attacked(_args(checkpoint, tmp_path)) == report
     assert report["settings"] == {
         "checkpoint": str(tmp_path / "checkpoint.pt"),
+        "algorithm": "wocar_dqn",
         "env": checkpoint["dqn_env"],
         "n_agents": N_AGENTS,
         "attack": "minbest",
