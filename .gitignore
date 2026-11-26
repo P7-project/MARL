@@ -5,7 +5,7 @@ __pycache__/
 
 PROJECT.md
 
-src/marl/typst/data/
+tools/typst/data/
 
 AGENTS.md
 CLAUDE.md
