@@ -8,14 +8,14 @@ It replaces a long command line and keeps the settings of an experiment in one p
 Run from the repository root:
 
 ```bash
-uv run scripts/train.py --config configs/wocar_dqn_highway.json
+uv run scripts/train.py --config configs/wocar_dqn_highway_indvidual.json
 ```
 
 - Values in the file replace the defaults of `build_parser` in `scripts/train.py`.
 - Flags given on the command line override the file. For a short test run of the example:
 
   ```bash
-  uv run scripts/train.py --config configs/wocar_dqn_highway.json --total-steps 6000 --warmup 500
+  uv run scripts/train.py --config configs/wocar_dqn_highway_indvidual.json --total-steps 6000 --warmup 500
   ```
 
 - Keys are the argparse dest names: the flag without the leading `--`, with `-` replaced by `_`.
@@ -30,7 +30,7 @@ uv run scripts/train.py --config configs/wocar_dqn_highway.json
 
 ## How to make a new config
 
-1. Copy the example: `cp configs/wocar_dqn_highway.json configs/<new_name>.json`.
+1. Copy the example: `cp configs/wocar_dqn_highway_indvidual.json configs/<new_name>.json`.
 2. Change the values you need, and add keys from the table below. Keys you leave out keep their default.
 3. Use one file per experiment, named after what it runs (mode, environment, the setting that differs).
 
@@ -89,9 +89,9 @@ Defaults are the `build_parser` defaults (see also `scripts/train.md`).
 | Key | What it does | Type / allowed values | Default | Used by |
 |---|---|---|---|---|
 | `dqn_env` | Environment for WocaR-DQN. | `highway`, `intersection` | `highway` | wocar_dqn, dqn |
-| `lr` | Learning rate for `Q_v`, `Q_phi` and `Q_r`. | float | 1e-4 | wocar_dqn, dqn |
+| `lr` | Learning rate. WocaR-DQN: `Q_v`, `Q_phi` and `Q_r`; vanilla DQN: its one Q-network. | float | 1e-4 | wocar_dqn, dqn |
 | `regularizer_margin` | Margin of the regularizer hinge (official `hinge_c`). | float | 1 | wocar_dqn |
-| `hidden` | Width of the three Q-networks. | int | 64 | wocar_dqn, dqn |
+| `hidden` | Width of the Q-networks. WocaR-DQN: `Q_v`, `Q_phi` and `Q_r`; vanilla DQN: its one Q-network and its target. | int | 64 | wocar_dqn, dqn |
 | `tau` | Soft-update coefficient for the target network `Q_v'`. | float | 0.005 | wocar_dqn, dqn |
 | `dqn_kappa_wst_final` | Final value of `kappa_wst`, the weight of `Q_phi` in the `Q_r` target (exponential ramp). WocaR-DQN only; WocaR-PPO uses `kappa_wst_final`. | float | 0.5 | wocar_dqn |
 | `kappa_wst_start_fraction` | Fraction of `total_steps` before the `kappa_wst` ramp starts; it ends at `total_steps`. | float | 1/3 | wocar_dqn |

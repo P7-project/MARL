@@ -425,7 +425,7 @@ def train_dqn(args: Namespace, console: Console) -> None:
     log_prefix: str = "dqn" if algorithm == "dqn" else "woca"
     with console.status(f"[bold green]Setting up {label}..."):
         if args.total_steps <= args.warmup:
-            raise ValueError(f"--total_steps ({args.total_steps}) must be >= --warmup ({args.warmup})")
+            raise ValueError(f"--total_steps ({args.total_steps}) must be > --warmup ({args.warmup})")
 
         device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         np.random.seed(args.seed)

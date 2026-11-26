@@ -144,7 +144,7 @@ With 3 agents, updates begin well before ε starts ramping.
 ## Outputs
 
 - Checkpoint at `--save`. `mappo` and `wocar_ppo` save actor and critic state dicts. `wocar_dqn` saves the `Q_r` state dict, which is the acting network; `dqn` saves its `Q` state dict under the key `q`.
-- TensorBoard logs in `<logdir>/<run-name>`: `episode/return`, losses, and for WocaR runs `woca/epsilon` and `woca/kappa_wst`.
+- TensorBoard logs in `<logdir>/<run-name>`: `episode/return`, losses, and for WocaR runs `woca/epsilon` and `woca/kappa_wst`. Vanilla DQN (`dqn`) logs its loss as `dqn/td_loss`.
 
 ```bash
 uv run tensorboard --logdir runs
@@ -152,4 +152,4 @@ uv run tensorboard --logdir runs
 
 ## Sanity check
 
-For `wocar_ppo`, `--eps-final 0` and `--kappa-wst-final 0` remove the WocaR terms and should match the plain PPO baseline. For `wocar_dqn`, `--eps-final 0`, `--dqn-kappa-wst-final 0` and `--kappa-reg 0` reduce the `Q_r` loss to a plain TD loss on `r + gamma * max_a' Q_v'(s', a')`. This is still not plain independent DQN: `Q_r` bootstraps from the separately trained `Q_v'`, not from a target copy of itself.
+For `wocar_ppo`, `--eps-final 0` and `--kappa-wst-final 0` remove the WocaR terms and should match the plain PPO baseline. For `wocar_dqn`, `--eps-final 0`, `--dqn-kappa-wst-final 0` and `--kappa-reg 0` reduce the `Q_r` loss to a plain TD loss on `r + gamma * max_a' Q_v'(s', a')`. This is still not plain independent DQN: `Q_r` bootstraps from the separately trained `Q_v'`, not from a target copy of itself. For plain DQN use `--update-function dqn`.
