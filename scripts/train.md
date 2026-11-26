@@ -44,7 +44,7 @@ uv run scripts/train.py --update-function wocar_dqn --dqn-env intersection \
 | PPO | yes | yes | no |
 | WocaR shared (`--eps-final`, `--kappa-reg`) | no | yes | yes |
 | WocaR-PPO only | no | yes | no |
-| WocaR-DQN only | no | no | yes |
+| WocaR-DQN only | no | no | yes | 
 
 An argument a mode does not read is accepted and ignored.
 

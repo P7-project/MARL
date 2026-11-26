@@ -100,7 +100,11 @@ def evaluate_attacked(args: Namespace) -> dict:
     folder: Path = reserve_attack_folder(args.logdir, run_name)
     print(f"Attack evaluation folder: {folder}", flush=True)
     player: DqnPlayer = _builder_for(ATTACK_ALGORITHM)(
-        checkpoint, render=args.render, render_agents=args.render_agents
+            checkpoint,
+            render=args.render,
+            render_agents=args.render_agents,
+            screen_width=800,
+            screen_height=300
     )
     writer = create_attack_writer(folder)
     try:
