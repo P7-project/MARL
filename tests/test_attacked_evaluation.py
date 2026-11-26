@@ -16,7 +16,8 @@ from scripts.evaluate import build_parser
 from src.marl.attacks.registry import ATTACK_BUILDERS, ObservationAttack, build_attack
 from src.marl.training import attack_logging
 from src.marl.training.evaluator import attacked_cars_per_episode, evaluate_attacked
-from src.marl.woca_r_rl.dqn import DqnPlayer, _build_robust_q, build_dqn_player
+from src.marl.algorithms.wocar_dqn import DqnPlayer, build_dqn_player
+from src.marl.algorithms.wocar_dqn.networks import _build_robust_q
 
 N_AGENTS: int = 5
 HIDDEN: int = 16

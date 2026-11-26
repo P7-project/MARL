@@ -8,15 +8,15 @@ from torch import Tensor, nn
 from auto_LiRPA import BoundedModule
 
 from src.marl.common import RampSchedule
-from src.marl.woca_r_rl.dqn import (
+from src.marl.algorithms.wocar_dqn import (
     Batch,
-    QValueBounds,
     ReachableActionEstimator,
     RobustQBounder,
     SARegularizer,
     WocaRDQNConfig,
     WocaRDQNTrainer,
 )
+from src.marl.algorithms.wocar_dqn.bounds import QValueBounds
 
 STATE_DIM: int = 4
 NUM_ACTIONS: int = 3

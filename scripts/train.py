@@ -13,7 +13,7 @@ from marl.common import add_render_arguments
 from marl.envs import REWARD_FUNCTIONS
 from marl.training.trainer import train
 from marl.woca_r_rl.ppo import train_ppo
-from marl.woca_r_rl.dqn import train_dqn
+from marl.algorithms.wocar_dqn import train_dqn
 
 console = Console()
 

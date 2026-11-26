@@ -10,7 +10,7 @@ Inside `src/marl` use the relative form, e.g. `from ..common import PolicyPlayer
 
 | File | Holds | Used by |
 |---|---|---|
-| `networks.py` | `layer_init`, `mlp`, `Actor`, `GaussianActor`, `Critic` | MAPPO (`training/trainer.py`), WocaR-DQN (`woca_r_rl/dqn.py`), WocaR-PPO (`woca_r_rl/ppo.py`), attack tests |
+| `networks.py` | `layer_init`, `mlp`, `Actor`, `GaussianActor`, `Critic` | MAPPO (`training/trainer.py`), WocaR-DQN (`algorithms/wocar_dqn/`), WocaR-PPO (`woca_r_rl/ppo.py`), attack tests |
 | `schedules.py` | `RampSchedule` | WocaR-DQN, WocaR-PPO |
 | `advantages.py` | `compute_gae` | MAPPO (`mappo.py`), WocaR-PPO |
 | `player.py` | `PolicyPlayer`, `StepResult`, `Weights`, `PlayerFactory` | every player, the live view, `training/evaluator.py` |
@@ -71,10 +71,10 @@ A new algorithm (for example a vanilla DQN baseline) subclasses `PolicyPlayer` a
 Rules that come from how the player is used:
 
 - The player is built inside a child process (spawned, not forked). Everything it holds (env, networks) is created there. Its constructor arguments must be plain and picklable; the network is built on CPU in the constructor and filled later by `load_weights`.
-- The trainer passes a `PlayerFactory`: a zero-argument callable that builds the player. It must pickle, so use a top-level class or `functools.partial` of one (see `partial(DqnPlayer, ...)` in `woca_r_rl/dqn.py`), not a lambda or a nested function.
+- The trainer passes a `PlayerFactory`: a zero-argument callable that builds the player. It must pickle, so use a top-level class or `functools.partial` of one (see `partial(DqnPlayer, ...)` in `algorithms/wocar_dqn/train.py`), not a lambda or a nested function.
 - For `scripts/evaluate.py`, add a top-level `build_<name>_player(checkpoint: dict) -> PolicyPlayer` that builds the player from the saved checkpoint and loads its weights, save an `"algorithm"` field in the checkpoint, and add the name to `_builder_for` in `training/evaluator.py`.
 
-Existing players to copy from: `MappoPlayer` (`training/trainer.py`), `DqnPlayer` (`woca_r_rl/dqn.py`, also supports attacks via `set_attack`), `PpoPlayer` (`woca_r_rl/ppo.py`).
+Existing players to copy from: `MappoPlayer` (`training/trainer.py`), `DqnPlayer` (`algorithms/wocar_dqn/player.py`, also supports attacks via `set_attack`), `PpoPlayer` (`woca_r_rl/ppo.py`).
 
 ## Live view and windowed evaluation (`live_view.py`)
 
