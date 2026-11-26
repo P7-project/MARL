@@ -23,7 +23,7 @@ from .attack_logging import (
 )
 
 if TYPE_CHECKING:
-    from ..woca_r_rl.dqn import DqnPlayer
+    from ..algorithms.wocar_dqn import DqnPlayer
 
 ATTACK_ALGORITHM: str = "wocar_dqn"
 ATTACK_RNG_STREAM: int = 1  # keeps the car shuffling independent of the env seeds
@@ -49,7 +49,7 @@ def _builder_for(algorithm: str) -> Callable[[dict], PolicyPlayer]:
         from .trainer import build_mappo_player
         return build_mappo_player
     if algorithm == "wocar_dqn":
-        from ..woca_r_rl.dqn import build_dqn_player
+        from ..algorithms.wocar_dqn import build_dqn_player
         return build_dqn_player
     if algorithm == "wocar_ppo":
         from ..woca_r_rl.ppo import build_ppo_player

@@ -19,7 +19,7 @@ ATOL: float = 1e-6
 
 
 def _build_robust_q(input_dim: int, n_actions: int) -> BoundedModule:
-    """Same construction as _build_robust_q in src/marl/woca_r_rl/dqn.py."""
+    """Same construction as _build_robust_q in src/marl/algorithms/wocar_dqn/networks.py."""
     return BoundedModule(
         mlp(input_dim, n_actions, HIDDEN, out_gain=1.0),
         torch.zeros(1, input_dim),
