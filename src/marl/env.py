@@ -197,6 +197,8 @@ def make_env(
     reward_function: str = "team",
     team_weight: float | None = None,
     render_agents: int | None = None,
+    screen_width: int | None = None,
+    screen_height: int | None = None,
 ) -> gym.Env:
     """render_agents (camera views in the window) only applies to highway."""
     if team_weight is not None and (team_weight < 0.0 or team_weight > 1.0):
@@ -205,7 +207,13 @@ def make_env(
         return make_intersection_env(n_agents, render_mode, reward_function, team_weight)
     if name == "highway":
         return make_highway_env(
-            n_agents, render_mode, reward_function, team_weight, render_agents
+            n_agents, 
+            render_mode, 
+            reward_function, 
+            team_weight, 
+            render_agents,
+            screen_width,
+            screen_height,
         )
     raise ValueError(f"Unknown environment: {name}")
 
@@ -231,6 +239,8 @@ def make_highway_env(
     reward_function: str = "team",
     team_weight: float | None = None,
     render_agents: int | None = None,
+    screen_width: int | None = None,
+    screen_height: int | None = None,
 ) -> gym.Env:
     config: dict[str, Any] = {
         "controlled_vehicles": n_agents,
@@ -259,6 +269,12 @@ def make_highway_env(
         config["team_reward_weight"] = team_weight
     if render_agents is not None:
         config["render_agents"] = render_agents
+
+    if screen_width is not None:
+        config["screen_width"] = screen_width
+
+    if screen_height is not None:
+        config["screen_height"] = screen_height
     return gym.make("team-highway-v0", config=config, render_mode=render_mode)
 
 

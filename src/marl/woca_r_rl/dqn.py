@@ -387,6 +387,7 @@ class ReachableActionEstimator:
             raise RuntimeError("Empty reachable action set; check bounds for NaN or inf.")
         return reachable
 
+
     def _highest_competitor_lower_bound(self, lower: Tensor) -> Tensor:
         """
             [batch, A]: entry (b, i) = max_{j != i} lower[b, j] (-inf if there is one action).
@@ -673,6 +674,8 @@ class DqnPlayer(PolicyPlayer):
         team_weight: float | None = None,
         render: bool = True,
         render_agents: int | None = None,
+        screen_width: int | None = None,
+        screen_height: int | None = None,
     ) -> None:
         self._n_agents: int = n_agents
         self._obs_dim: int = obs_dim
@@ -685,6 +688,8 @@ class DqnPlayer(PolicyPlayer):
             reward_function=reward_function,
             team_weight=team_weight,
             render_agents=render_agents,
+            screen_width=screen_width,
+            screen_height=screen_height,
         )
         self._policy: BoundedModule = _build_robust_q(
             obs_dim + n_agents, n_actions, hidden, self._device
@@ -772,7 +777,7 @@ class DqnPlayer(PolicyPlayer):
 
 
 def build_dqn_player(
-    checkpoint: dict, render: bool = True, render_agents: int | None = None
+    checkpoint: dict, render: bool = True, render_agents: int | None = None, screen_width: int | None = None, screen_height: int | None = None,
 ) -> DqnPlayer:
     player = DqnPlayer(
         checkpoint["n_agents"],
@@ -784,6 +789,8 @@ def build_dqn_player(
         team_weight=checkpoint.get("team_weight"),
         render=render,
         render_agents=render_agents,
+        screen_width=screen_width,
+        screen_height=screen_height,
     )
     player.load_weights(checkpoint["robust_q"])
     return player
