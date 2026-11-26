@@ -10,10 +10,10 @@ from torch.utils.tensorboard import SummaryWriter
 
 from ..envs import build_actor_obs, flatten_obs, make_env
 from ..mappo import ppo_update
-from ..models import Actor, Critic
+from ..common import Actor, Critic
 from functools import partial
 
-from ..rendering import AsyncPolicyRenderer, PolicyPlayer, StepResult, Weights, create_renderer
+from ..common import AsyncPolicyRenderer, PolicyPlayer, StepResult, Weights, create_renderer
 
 
 console = Console()

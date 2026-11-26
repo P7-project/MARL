@@ -5,7 +5,7 @@ from torch import Tensor, nn
 
 from src.marl.attacks.min_best_fgsm import min_best_fgsm
 from src.marl.attacks.pgd import PGD_STEPS, PgdAttack, pgd, pgd_step
-from src.marl.models import mlp
+from src.marl.common import mlp
 
 N_AGENTS: int = 3
 HIDDEN: int = 32

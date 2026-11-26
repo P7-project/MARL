@@ -37,10 +37,8 @@ Hyperparameters from the paper:
 """
 
 from argparse import Namespace
-from dataclasses import dataclass
 from datetime import datetime
-from math import exp
-from typing import Literal, NamedTuple
+from typing import NamedTuple
 
 import gymnasium as gym
 import numpy as np
@@ -52,9 +50,16 @@ from torch import Tensor, nn
 from torch.optim import Optimizer
 from torch.utils.tensorboard import SummaryWriter
 
-from ..mappo import compute_gae
-from ..models import Critic, GaussianActor, mlp
-from ..rendering import PolicyPlayer, StepResult, Weights
+from ..common import (
+    Critic,
+    GaussianActor,
+    PolicyPlayer,
+    RampSchedule,
+    StepResult,
+    Weights,
+    compute_gae,
+    mlp,
+)
 
 
 class ActionBox(NamedTuple):
@@ -710,30 +715,6 @@ def _collect_rollout(
 def _to_batch(obs: np.ndarray, device: torch.device) -> Tensor:
     """[obs_dim] -> [1, obs_dim], the shape the BoundedModule was traced with."""
     return torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-
-
-@dataclass(frozen=True)
-class RampSchedule:
-    """0 until start_step, then ramps to final_value over ramp_steps, then stays there."""
-
-    start_step: int
-    ramp_steps: int
-    final_value: float
-    shape: Literal["linear", "exponential"] = "linear"
-    growth: float = 5.0
-
-    def __post_init__(self) -> None:
-        if self.ramp_steps <= 0:
-            raise ValueError("ramp_steps must be positive")
-
-    def value(self, step: int) -> float:
-        if step <= self.start_step:
-            return 0.0
-        progress: float = min((step - self.start_step) / self.ramp_steps, 1.0)
-        if self.shape == "linear":
-            return self.final_value * progress
-        normalizer: float = exp(self.growth) - 1.0
-        return self.final_value * (exp(self.growth * progress) - 1.0) / normalizer
 
 
 class PpoPlayer(PolicyPlayer):
