@@ -1,10 +1,15 @@
-from parser import generate_lilaq_string
-from rich.console import Console
-import pathlib
 import argparse
+import pathlib
+import sys
 
+# Import parser.py from this script's folder, whatever the working directory.
+SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR))
 
-DIRECTORY = "./data/"
+from parser import generate_lilaq_string  # noqa: E402
+from rich.console import Console  # noqa: E402
+
+DEFAULT_DATA_DIR = SCRIPT_DIR / "data"
 
 parser = argparse.ArgumentParser(description="Convert JSON logs to Typst Lilaq plot.")
 
@@ -18,11 +23,12 @@ parser.add_argument("--xmin", type=float, default=None, help="X minimum")
 parser.add_argument("--xmax", type=float, default=None, help="X maximum")
 parser.add_argument("--ymin", type=float, default=None, help="Y minimum")
 parser.add_argument("--ymax", type=float, default=None, help="Y maximum")
+parser.add_argument("--data-dir", type=pathlib.Path, default=DEFAULT_DATA_DIR, help="Folder with the JSON files; the output is written here too")
 
 args = parser.parse_args()
 
 lilaq_string = generate_lilaq_string(   
-    directory=DIRECTORY,
+    directory=str(args.data_dir),
     experiments=args.experiments,
     metric=args.metric,
     resolution=args.resolution,
@@ -34,7 +40,7 @@ lilaq_string = generate_lilaq_string(
     y_max=args.ymax,
 )
 
-output_path = pathlib.Path.joinpath(pathlib.Path(DIRECTORY), args.output + ".txt")
+output_path = args.data_dir / (args.output + ".txt")
 with open(output_path, "w") as f:
     f.write(lilaq_string)
 
