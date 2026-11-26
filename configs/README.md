@@ -51,7 +51,7 @@ Defaults are the `build_parser` defaults (see also `scripts/train.md`).
 | `logdir` | TensorBoard root; logs go to `<logdir>/<run_name>`. | str | `runs` | all |
 | `run_name` | Sub-directory name inside `logdir`. Every run gets its own new folder: if `<logdir>/<run_name>` already exists (same-second start or a reused name), `_2`, `_3`, ... is appended; the final name is printed at launch. | str | `null` (becomes `<update_function>_<day>_<HH-MM-SS>`) | all |
 | `agents` | Number of controlled vehicles. | int | 3 | mappo, wocar_dqn |
-| `reward` | Reward function for the multi-agent environments (`marl.reward_funcs`). | keys of `REWARD_FUNCTIONS` in `src/marl/reward_funcs.py` | `team` | mappo, wocar_dqn |
+| `reward` | Reward function for the multi-agent environments (`marl.envs.rewards`, see [`src/marl/envs/README.md`](../src/marl/envs/README.md)). | keys of `REWARD_FUNCTIONS` in `src/marl/envs/rewards.py` | `team` | mappo, wocar_dqn |
 | `team_weight` | Weight of the teammates' mean reward in each agent's reward, in [0, 1]. Only used by `reward: team`. | float or `null` | `null` (0.25 for highway, 0.1 for intersection) | mappo, wocar_dqn |
 | `render` | Show the current policy in a separate window while training. | bool | `false` | mappo, wocar_dqn |
 | `render_fps` | Frames per second of the render process. | float | 15.0 | mappo, wocar_dqn |

@@ -1,4 +1,4 @@
-"""Highway environment setup and observation helpers."""
+"""Highway environment with one reward per controlled vehicle and a shared episode outcome."""
 
 from typing import Any
 
@@ -6,20 +6,15 @@ import gymnasium as gym
 import numpy as np
 from highway_env import utils
 from highway_env.envs.highway_env import HighwayEnv
-from highway_env.envs.intersection_env import ConnectedLaneMultiAgentIntersectionEnv
 from highway_env.vehicle.controller import ControlledVehicle
 
-from .reward_funcs import get_reward_function
+from .rewards import get_reward_function
 
 
 # A highway episode ends as soon as any controlled vehicle crashes, so a
 # teammate's crash already ends the episode for everyone and the mixed term
 # mostly shapes the driving reward: a larger weight keeps it visible.
 DEFAULT_HIGHWAY_TEAM_WEIGHT: float = 0.25
-# An intersection episode ends per agent, so a crashed teammate's negative
-# reward is mixed into the survivors again on every remaining step and those
-# steps accumulate: a smaller per-step weight already makes a crash costly.
-DEFAULT_INTERSECTION_TEAM_WEIGHT: float = 0.1
 
 
 class TeamHighwayEnv(HighwayEnv):
@@ -50,7 +45,7 @@ class TeamHighwayEnv(HighwayEnv):
         Other modes (e.g. rgb_array) keep the stock viewer, which returns a real frame.
         """
         if self.render_mode == "human" and self.viewer is None:
-            from .render_viewer import MultiAgentEnvViewer  # pygame only when rendering
+            from .highway_viewer import MultiAgentEnvViewer  # pygame only when rendering
 
             self.viewer = MultiAgentEnvViewer(self)
         return super().render()
@@ -143,86 +138,7 @@ class TeamHighwayEnv(HighwayEnv):
         return info
 
 
-class TeamIntersectionEnv(ConnectedLaneMultiAgentIntersectionEnv):
-    """Intersection driving with one reward per controlled vehicle and per-agent termination.
-
-    ``step`` replaces ``MultiAgentWrapper`` (which ``intersection-multi-agent-v2``
-    uses) on purpose: it returns the per-agent rewards computed by the configured
-    reward function together with ``info["agents_terminated"]``, so the reward can
-    come from ``marl.reward_funcs`` instead of the stock cooperative mean.
-    """
-
-    @classmethod
-    def default_config(cls) -> dict[str, Any]:
-        """V2's config plus the reward function name and its team weight."""
-        config: dict[str, Any] = super().default_config()
-        config["reward_function"] = "team"
-        config["team_reward_weight"] = DEFAULT_INTERSECTION_TEAM_WEIGHT
-        return config
-
-    def configure(self, config: dict) -> None:
-        """Configure the env, build the reward function and reset the per-step caches."""
-        super().configure(config)
-        self.reward_function = get_reward_function(self.config["reward_function"])
-        self._last_vehicle_rewards: tuple[float, ...] = ()
-        self._last_action: Any = None
-
-    def step(self, action) -> tuple:
-        """Stock step, with per-agent rewards and per-agent termination instead of the team mean."""
-        obs, _reward, _terminated, truncated, info = super().step(action)
-        return obs, self._last_vehicle_rewards, info["agents_terminated"], truncated, info
-
-    def _reward(self, action) -> float:
-        """Run the reward function once for this step, store the per-vehicle rewards and return their mean."""
-        self._last_action = action
-        self._last_vehicle_rewards = self.reward_function(self)
-        return float(np.mean(self._last_vehicle_rewards))
-
-    def raw_vehicle_rewards(self) -> tuple[float, ...]:
-        """The stock IntersectionEnv per-vehicle rewards for the action being rewarded."""
-        return tuple(
-            float(self._agent_reward(self._last_action, vehicle))
-            for vehicle in self.controlled_vehicles
-        )
-
-
 gym.register(id="team-highway-v0", entry_point=TeamHighwayEnv)
-gym.register(id="team-intersection-v0", entry_point=TeamIntersectionEnv)
-
-
-def make_env(
-    n_agents: int = 3,
-    render_mode: str | None = None,
-    name: str = "highway",
-    reward_function: str = "team",
-    team_weight: float | None = None,
-    render_agents: int | None = None,
-) -> gym.Env:
-    """render_agents (camera views in the window) only applies to highway."""
-    if team_weight is not None and (team_weight < 0.0 or team_weight > 1.0):
-        raise ValueError(f"team_weight must be in [0, 1], got {team_weight}")
-    if name == "intersection":
-        return make_intersection_env(n_agents, render_mode, reward_function, team_weight)
-    if name == "highway":
-        return make_highway_env(
-            n_agents, render_mode, reward_function, team_weight, render_agents
-        )
-    raise ValueError(f"Unknown environment: {name}")
-
-
-def make_intersection_env(
-    n_agents: int = 3,
-    render_mode: str | None = None,
-    reward_function: str = "team",
-    team_weight: float | None = None,
-) -> gym.Env:
-    config: dict[str, Any] = {
-        "controlled_vehicles": n_agents,
-        "reward_function": reward_function,
-    }
-    if team_weight is not None:
-        config["team_reward_weight"] = team_weight
-    return gym.make("team-intersection-v0", config=config, render_mode=render_mode)
 
 
 def make_highway_env(
@@ -260,21 +176,3 @@ def make_highway_env(
     if render_agents is not None:
         config["render_agents"] = render_agents
     return gym.make("team-highway-v0", config=config, render_mode=render_mode)
-
-
-def flatten_obs(obs) -> np.ndarray:
-    """Convert one observation per agent to a float32 (agents, features) array."""
-    return np.stack(
-        [np.asarray(agent_obs, dtype=np.float32).reshape(-1) for agent_obs in obs]
-    )
-
-
-def any_vehicle_crashed(env: gym.Env) -> bool:
-    unwrapped: Any = env.unwrapped  # highway-env specific attributes are unknown to the type checker
-    return any(vehicle.crashed for vehicle in unwrapped.controlled_vehicles)
-
-
-def build_actor_obs(obs_flat: np.ndarray, n_agents: int) -> np.ndarray:
-    """Append one-hot agent IDs to the per-agent observations."""
-    agent_ids = np.eye(n_agents, dtype=np.float32)
-    return np.concatenate([obs_flat, agent_ids], axis=-1)

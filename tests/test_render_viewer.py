@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from src.marl.env import make_env
+from src.marl.envs import make_env
 
 N_AGENTS: int = 5
 

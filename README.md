@@ -12,7 +12,7 @@ Three training modes share one entry point (`scripts/train.py`, selected with `-
 
 - **Parameter-shared actor:** one policy network used by all agents. A one-hot agent ID is appended to each agent's observation so they can specialise.
 - **Centralised critic:** V(s) takes the concatenation of all agents' observations.
-- **Team reward:** `TeamHighwayEnv` (`src/marl/env.py`) averages the per-vehicle highway-env reward over all controlled vehicles and ends the episode when any vehicle crashes. GAE is computed at team level and the same advantage is used for every agent's policy loss.
+- **Team reward:** the environment returns one reward per car (with `--reward team` each car's own reward is mixed with its teammates' mean), and MAPPO trains on their average; see [`src/marl/envs/README.md`](src/marl/envs/README.md). GAE is computed at team level and the same advantage is used for every agent's policy loss.
 
 ## Install
 

@@ -7,11 +7,9 @@ import pytest
 from highway_env.envs.highway_env import HighwayEnv
 from highway_env.envs.intersection_env import ConnectedLaneMultiAgentIntersectionEnv
 
-from src.marl.env import (
-    DEFAULT_HIGHWAY_TEAM_WEIGHT,
-    DEFAULT_INTERSECTION_TEAM_WEIGHT,
-    make_env,
-)
+from src.marl.envs import make_env
+from src.marl.envs.highway import DEFAULT_HIGHWAY_TEAM_WEIGHT
+from src.marl.envs.intersection import DEFAULT_INTERSECTION_TEAM_WEIGHT
 
 TEAM_WEIGHTS: list[float] = [0.0, 0.25, 1.0]
 VEHICLE_STATES: list[str] = ["driving", "crashed", "offroad"]
@@ -250,8 +248,8 @@ def test_make_env_rejects_team_weight_outside_unit_interval(
     def fail(*args: Any, **kwargs: Any) -> gym.Env:
         raise AssertionError("make_env built an env before validating team_weight")
 
-    monkeypatch.setattr("src.marl.env.make_highway_env", fail)
-    monkeypatch.setattr("src.marl.env.make_intersection_env", fail)
+    monkeypatch.setattr("src.marl.envs.factory.make_highway_env", fail)
+    monkeypatch.setattr("src.marl.envs.factory.make_intersection_env", fail)
 
     with pytest.raises(ValueError, match=r"team_weight must be in \[0, 1\]"):
         make_env(2, name=name, team_weight=team_weight)

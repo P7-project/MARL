@@ -51,7 +51,7 @@ import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
 from ..attacks.registry import ObservationAttack
-from ..env import any_vehicle_crashed, build_actor_obs, flatten_obs, make_env
+from ..envs import any_vehicle_crashed, build_actor_obs, flatten_obs, make_env
 
 from functools import partial
 
