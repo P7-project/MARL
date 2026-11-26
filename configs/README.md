@@ -3,13 +3,6 @@
 A config file is a JSON object that sets the arguments of `scripts/train.py`.
 It replaces a long command line and keeps the settings of an experiment in one place.
 
-## Configs in this folder
-
-| File | Runs | Reward |
-|---|---|---|
-| [`wocar_dqn_highway_team.json`](wocar_dqn_highway.json) | WocaR-DQN, highway, 3 agents, 200k steps | `team` mix, default weight 0.25 |
-| [`wocar_dqn_highway_individual.json`](wocar_dqn_highway_individual.json) | WocaR-DQN, highway, 3 agents, 200k steps | Individual reward $r_i$ (`team_weight: 0`); the episode still ends for all cars at any crash. Used in the paper. |
-
 ## How to use
 
 Run from the repository root:
