@@ -13,7 +13,7 @@ import torch
 from torch import Tensor
 
 from ..attacks.registry import ObservationAttack, build_attack
-from ..rendering import PolicyPlayer, StepResult, evaluate_in_windows
+from ..common import PolicyPlayer, StepResult, evaluate_in_windows
 from .attack_logging import (
     RESULTS_FILE,
     create_attack_writer,

@@ -10,7 +10,7 @@ from src.marl.attacks.min_best_fgsm import (
     min_best_gradient,
     min_best_loss,
 )
-from src.marl.models import mlp
+from src.marl.common import mlp
 
 N_AGENTS: int = 3
 HIDDEN: int = 32
